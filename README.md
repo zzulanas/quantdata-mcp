@@ -8,9 +8,22 @@ MCP server that gives AI agents (Claude Code, Claude Desktop, etc.) access to re
 
 ### 1. Install
 
+You need **Python 3.11+** installed. Check with `python3 --version`.
+
+- **Mac:** `brew install python` (or download from [python.org](https://www.python.org/downloads/))
+- **Windows:** Download from [python.org](https://www.python.org/downloads/) (check "Add to PATH" during install)
+
+Then install the package:
+
 ```bash
+# With pip
 pip install git+https://github.com/zzulanas/quantdata-mcp.git
+
+# With uv (faster)
+uv pip install git+https://github.com/zzulanas/quantdata-mcp.git
 ```
+
+> **Don't have uv?** Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh` (Mac/Linux) or `irm https://astral.sh/uv/install.ps1 | iex` (Windows). It's a faster alternative to pip.
 
 ### 2. Get Your Credentials
 
