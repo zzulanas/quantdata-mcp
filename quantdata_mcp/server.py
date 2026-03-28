@@ -740,54 +740,6 @@ def qd_set_page_date(date: str, ticker: str = "SPX") -> str:
         return f"Error setting page date: {e}"
 
 
-@mcp.tool()
-def qd_login() -> str:
-    """Log in to QuantData via browser to set up the MCP server.
-
-    Opens a Chromium browser window to QuantData's website. Log in normally —
-    your auth credentials are captured automatically from network requests.
-    Once captured, the server creates a dedicated page with all 11 data tools
-    and saves the config. All other qd_* tools become available after this.
-
-    Call this tool if you get "not configured" errors, or to refresh an expired token.
-    Requires the 'browser' extra: pip install 'quantdata-mcp[browser]'
-    """
-    global _client, _config, _specs
-
-    try:
-        from quantdata_mcp.browser_auth import capture_credentials
-    except ImportError:
-        return (
-            "Browser login requires Playwright. Install with:\n"
-            "  pip install 'quantdata-mcp[browser]'\n"
-            "  playwright install chromium\n\n"
-            "Alternatively, run manually from your terminal:\n"
-            "  quantdata-mcp setup --auth-token <TOKEN> --instance-id <ID>"
-        )
-
-    try:
-        auth_token, instance_id = capture_credentials()
-    except RuntimeError as e:
-        return f"Browser login failed: {e}"
-
-    # Run setup
-    try:
-        from quantdata_mcp.setup import run_setup
-
-        run_setup(auth_token, instance_id)
-    except Exception as e:
-        return f"Setup failed after login: {e}"
-
-    # Reset cached client so next tool call picks up the new config
-    _client = None
-    _config = None
-    _specs = {}
-
-    return (
-        "Login successful! QuantData MCP is now configured.\n"
-        "All qd_* tools are ready to use. Try: qd_get_market_snapshot"
-    )
-
 
 # ---------------------------------------------------------------------------
 # Entry point
