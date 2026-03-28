@@ -36,7 +36,18 @@ def capture_credentials() -> tuple[str, str]:
     _log()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        try:
+            browser = p.chromium.launch(headless=False)
+        except Exception:
+            _log("Chromium not installed. Installing now (one-time)...")
+            import subprocess
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=True,
+                stdout=sys.stderr,
+                stderr=sys.stderr,
+            )
+            browser = p.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
 
