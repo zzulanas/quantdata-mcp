@@ -33,7 +33,7 @@ You need two values from your QuantData account. Open your browser:
 2. Open **DevTools** (F12 or right-click → Inspect) → **Network** tab
 3. Refresh the page
 4. Click on any chart or page on QuantData — you'll see API requests appear
-5. Click any request to `core-lb-prod.quantdata.us`
+5. Click any request to `core-lb-prod.quantdata.us`, or filter by /api in the top
 6. In the **Request Headers**, find and copy:
    - **`authorization`** — your auth token (starts with `eyJ...`)
    - **`x-instance-id`** — your instance ID (a UUID like `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
