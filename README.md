@@ -44,7 +44,9 @@ quantdata-mcp setup \
   --instance-id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```
 
-### 3. Add to Claude Code
+### 3. Add to Claude
+
+#### Claude Code
 
 Add to your project's `.mcp.json` (or global `~/.claude/mcp.json`):
 
@@ -60,6 +62,39 @@ Add to your project's `.mcp.json` (or global `~/.claude/mcp.json`):
 ```
 
 Restart Claude Code. You should see `quantdata` in your MCP servers.
+
+#### Claude Desktop
+
+Add to your Claude Desktop config file:
+
+- **Mac:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "quantdata": {
+      "command": "quantdata-mcp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+> **Note:** `quantdata-mcp` must be on your system PATH. If you installed into a virtualenv, use the full path instead:
+> ```json
+> { "command": "/Users/you/.local/bin/quantdata-mcp", "args": ["serve"] }
+> ```
+>
+> Or use `uvx` to run without worrying about PATH:
+> ```json
+> {
+>   "command": "uvx",
+>   "args": ["--from", "git+https://github.com/zzulanas/quantdata-mcp.git", "quantdata-mcp", "serve"]
+> }
+> ```
+
+Restart Claude Desktop. The QuantData tools will appear in your tool list.
 
 ## Available Tools
 
