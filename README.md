@@ -31,11 +31,16 @@ You need two values from your QuantData account. Open your browser:
 
 1. Go to [v3.quantdata.us](https://v3.quantdata.us) and **log in**
 2. Open **DevTools** (F12 or right-click → Inspect) → **Network** tab
-3. Click on any chart or page on QuantData — you'll see API requests appear
-4. Click any request to `core-lb-prod.quantdata.us`
-5. In the **Request Headers**, find and copy:
+3. Refresh the page
+4. Click on any chart or page on QuantData — you'll see API requests appear
+5. Click any request to `core-lb-prod.quantdata.us`
+6. In the **Request Headers**, find and copy:
    - **`authorization`** — your auth token (starts with `eyJ...`)
    - **`x-instance-id`** — your instance ID (a UUID like `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
+  
+Should look like these:
+<img width="2093" height="1146" alt="Screenshot 2026-03-27 at 8 49 30 PM 1" src="https://github.com/user-attachments/assets/51856fbb-7f22-458e-8478-8906f8792a54" />
+
 
 ### 3. Run Setup
 
