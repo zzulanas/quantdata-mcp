@@ -11,16 +11,21 @@ from quantdata_mcp.config import Config, config_exists, load_config, save_config
 from quantdata_mcp.tools import TOOL_DEFINITIONS
 
 
+def _log(msg: str = "", **kwargs: object) -> None:
+    """Print to stderr (stdout is reserved for MCP JSON-RPC)."""
+    print(msg, file=sys.stderr, **kwargs)  # type: ignore[arg-type]
+
+
 def run_setup(auth_token: str, instance_id: str) -> None:
     """Create page, tools, and save config."""
-    print("Setting up QuantData MCP...")
+    _log("Setting up QuantData MCP...")
 
     # Check existing config
     existing_config: Config | None = None
     if config_exists():
         try:
             existing_config = load_config()
-            print(f"  Found existing config (page: {existing_config.page_id[:12]}...)")
+            _log(f"  Found existing config (page: {existing_config.page_id[:12]}...)")
         except Exception:
             existing_config = None
 
@@ -32,39 +37,38 @@ def run_setup(auth_token: str, instance_id: str) -> None:
     )
 
     # Step 1: Validate credentials
-    print("  Validating credentials...", end=" ")
+    _log("  Validating credentials... ", end="")
     try:
         pages = client.get_pages()
-        print(f"OK ({len(pages)} pages found)")
+        _log(f"OK ({len(pages)} pages found)")
     except Exception as e:
-        print(f"FAILED: {e}")
-        print("\nCheck your auth token and instance ID.")
-        sys.exit(1)
+        _log(f"FAILED: {e}")
+        _log("\nCheck your auth token and instance ID.")
+        raise RuntimeError(f"Credential validation failed: {e}") from e
 
     # Step 2: Create or reuse page
     page_id = ""
     if existing_config and existing_config.page_id:
-        # Verify the page still exists
         tool_check = client.get_tool(
             next(iter(existing_config.tools.values()), "nonexistent")
         )
         if tool_check:
             page_id = existing_config.page_id
-            print(f"  Reusing existing page: {page_id[:12]}...")
+            _log(f"  Reusing existing page: {page_id[:12]}...")
         else:
-            print("  Existing page/tools not found, creating new...")
+            _log("  Existing page/tools not found, creating new...")
 
     if not page_id:
-        print("  Creating page...", end=" ")
+        _log("  Creating page... ", end="")
         page = client.create_page(
             name="MCP Agentic Page",
             description=f"Created by quantdata-mcp setup on {datetime.now(UTC).strftime('%Y-%m-%d')}",
         )
         if not page:
-            print("FAILED")
-            sys.exit(1)
+            _log("FAILED")
+            raise RuntimeError("Failed to create page")
         page_id = page.get("id", "")
-        print(f"OK ({page_id[:12]}...)")
+        _log(f"OK ({page_id[:12]}...)")
 
     # Step 3: Create tools
     tool_ids: dict[str, str] = {}
@@ -73,10 +77,10 @@ def run_setup(auth_token: str, instance_id: str) -> None:
 
     for name, defn in TOOL_DEFINITIONS.items():
         if name in tool_ids:
-            print(f"  Tool '{defn.label}' already exists, skipping")
+            _log(f"  Tool '{defn.label}' already exists, skipping")
             continue
 
-        print(f"  Creating tool: {defn.label}...", end=" ")
+        _log(f"  Creating tool: {defn.label}... ", end="")
         result = client.create_tool(
             page_id=page_id,
             tool_type=defn.tool_type.value,
@@ -86,28 +90,28 @@ def run_setup(auth_token: str, instance_id: str) -> None:
             tid = resp.get("id", "")
             if tid:
                 tool_ids[name] = tid
-                print(f"OK ({tid[:12]}...)")
+                _log(f"OK ({tid[:12]}...)")
             else:
-                print(f"OK (unexpected response shape)")
+                _log("OK (unexpected response shape)")
                 tool_ids[name] = str(result)
         else:
-            print("FAILED")
+            _log("FAILED")
 
     # Step 4: Set page filter (SPX, today)
     today = datetime.now(UTC).strftime("%Y-%m-%d")
-    print(f"  Setting page filter: SPX, {today}...", end=" ")
+    _log(f"  Setting page filter: SPX, {today}... ", end="")
     client.set_page_filter(page_id, session_date=today, ticker="SPX")
-    print("OK")
+    _log("OK")
 
     # Step 5: Update page layout with all tools as tabs
-    print("  Updating page layout...", end=" ")
+    _log("  Updating page layout... ", end="")
     tab_tools = []
     for name, tid in tool_ids.items():
         defn = TOOL_DEFINITIONS.get(name)
         if defn:
             tab_tools.append((tid, defn.label, defn.tool_type.value))
     client.update_page_layout(page_id, tab_tools)
-    print("OK")
+    _log("OK")
 
     # Step 6: Save config
     config = Config(
@@ -117,23 +121,10 @@ def run_setup(auth_token: str, instance_id: str) -> None:
         tools=tool_ids,
     )
     save_config(config)
-    print(f"\n  Config saved to ~/.quantdata-mcp/config.json")
-
-    # Print next steps
-    print(f"\n{'=' * 50}")
-    print("Setup complete! Add to your Claude Code .mcp.json:")
-    print()
-    print('  {')
-    print('    "mcpServers": {')
-    print('      "quantdata": {')
-    print('        "command": "quantdata-mcp",')
-    print('        "args": ["serve"]')
-    print("      }")
-    print("    }")
-    print("  }")
-    print()
-    print("Then restart Claude Code.")
-    print(f"{'=' * 50}")
+    _log(f"\n  Config saved to ~/.quantdata-mcp/config.json")
+    _log(f"\n{'=' * 50}")
+    _log("Setup complete!")
+    _log(f"{'=' * 50}")
 
     client.close()
 

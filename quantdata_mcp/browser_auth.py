@@ -5,6 +5,11 @@ from __future__ import annotations
 import sys
 
 
+def _log(msg: str = "") -> None:
+    """Print to stderr (stdout is reserved for MCP JSON-RPC)."""
+    print(msg, file=sys.stderr)
+
+
 def capture_credentials() -> tuple[str, str]:
     """Open browser to QuantData, capture auth token and instance ID from network requests.
 
@@ -17,17 +22,18 @@ def capture_credentials() -> tuple[str, str]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("Playwright is required for browser login.")
-        print("Install it with: pip install 'quantdata-mcp[browser]'")
-        print("Then run: playwright install chromium")
-        sys.exit(1)
+        raise RuntimeError(
+            "Playwright is required for browser login.\n"
+            "Install: pip install 'quantdata-mcp[browser]'\n"
+            "Then: playwright install chromium"
+        )
 
     auth_token: str | None = None
     instance_id: str | None = None
 
-    print("Opening browser to QuantData...")
-    print("Log in to your account — credentials will be captured automatically.")
-    print()
+    _log("Opening browser to QuantData...")
+    _log("Log in to your account — credentials will be captured automatically.")
+    _log()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -49,27 +55,22 @@ def capture_credentials() -> tuple[str, str]:
         page.on("request", handle_request)
         page.goto("https://v3.quantdata.us")
 
-        # Wait for the user to log in and make at least one API call
-        print("Waiting for you to log in...")
-        print("(The browser will close automatically once credentials are captured)")
-        print()
+        _log("Waiting for you to log in...")
+        _log("(The browser will close automatically once credentials are captured)")
+        _log()
 
-        # Poll until we capture credentials or user closes browser
         try:
             while auth_token is None or instance_id is None:
                 try:
                     page.wait_for_timeout(500)
-                    # Check if browser is still open
                     page.title()
                 except Exception:
                     break
 
             if auth_token and instance_id:
-                print(f"  Auth token captured: {auth_token[:20]}...{auth_token[-10:]}")
-                print(f"  Instance ID captured: {instance_id}")
-                print()
-
-                # Give user a moment to see the confirmation
+                _log(f"  Auth token captured: {auth_token[:20]}...{auth_token[-10:]}")
+                _log(f"  Instance ID captured: {instance_id}")
+                _log()
                 try:
                     page.wait_for_timeout(1500)
                 except Exception:

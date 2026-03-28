@@ -13,6 +13,7 @@ This module provides a clean, testable interface to the QuantData API with suppo
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -22,7 +23,13 @@ import requests
 if TYPE_CHECKING:
     from quantdata_mcp.tools import ToolSpec
 
+# Ensure logging goes to stderr (stdout is MCP JSON-RPC transport)
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.WARNING)
 
 
 class QuantDataError(Exception):
