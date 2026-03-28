@@ -19,6 +19,16 @@ playwright install chromium
 
 ### 2. Set Up (choose one method)
 
+#### Option Zero: Let Claude Do It
+
+If you've already added the MCP server to your config (step 3), just ask Claude:
+
+> *"Log in to QuantData"*
+
+Claude will call the `qd_login` tool, which opens a browser for you to log in. Credentials are captured automatically and setup runs. Done.
+
+> Requires the browser extra: `pip install 'quantdata-mcp[browser]'` + `playwright install chromium`
+
 #### Option A: Browser Login (easiest)
 
 ```bash
@@ -110,6 +120,7 @@ Restart Claude Desktop. The QuantData tools will appear in your tool list.
 | `qd_get_oi_by_strike` | Open interest distribution with near-ATM filtering |
 | `qd_get_contract_statistics` | Total premium, trade count, volume by call/put |
 | `qd_set_page_date` | Switch to a historical date for analysis |
+| `qd_login` | Open browser to log in and configure (first-time setup or token refresh) |
 
 ### Example Usage
 
