@@ -9,27 +9,34 @@ MCP server that gives AI agents (Claude Code, etc.) access to real-time and hist
 ### 1. Install
 
 ```bash
-pip install quantdata-mcp
-# or
-uv pip install quantdata-mcp
+# Basic install
+pip install git+https://github.com/zzulanas/quantdata-mcp.git
+
+# With browser login support (recommended)
+pip install "quantdata-mcp[browser] @ git+https://github.com/zzulanas/quantdata-mcp.git"
+playwright install chromium
 ```
 
-### 2. Get Your Credentials
+### 2. Set Up (choose one method)
 
-You need two values from your QuantData account:
+#### Option A: Browser Login (easiest)
 
-**Auth Token (JWT):**
+```bash
+quantdata-mcp login
+```
+
+This opens a browser window to QuantData. Log in normally — your credentials are captured automatically from network requests. The browser closes once captured, then the setup runs.
+
+#### Option B: Manual Setup
+
+Get your credentials from the browser Network tab:
+
 1. Open [v3.quantdata.us](https://v3.quantdata.us) and log in
-2. Open browser DevTools (F12) -> Network tab
-3. Click on any page/chart — look for API requests to `core-lb-prod.quantdata.us`
-4. Click any request, find the `authorization` header in Request Headers
-5. Copy the full value (starts with `eyJ...`)
-
-**Instance ID:**
-1. In the same request, find the `x-instance-id` header
-2. Copy the UUID value (format: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
-
-### 3. Run Setup
+2. Open DevTools (F12) → Network tab
+3. Click any page/chart — look for requests to `core-lb-prod.quantdata.us`
+4. From any request's headers, copy:
+   - **`authorization`** header value (the JWT, starts with `eyJ...`)
+   - **`x-instance-id`** header value (a UUID)
 
 ```bash
 quantdata-mcp setup \
@@ -37,9 +44,7 @@ quantdata-mcp setup \
   --instance-id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```
 
-This creates a dedicated page on your QuantData account with 11 data tools, and saves your config to `~/.quantdata-mcp/config.json`.
-
-### 4. Add to Claude Code
+### 3. Add to Claude Code
 
 Add to your project's `.mcp.json` (or global `~/.claude/mcp.json`):
 
@@ -71,6 +76,15 @@ Restart Claude Code. You should see `quantdata` in your MCP servers.
 | `qd_get_contract_statistics` | Total premium, trade count, volume by call/put |
 | `qd_set_page_date` | Switch to a historical date for analysis |
 
+### Example Usage
+
+Ask Claude Code things like:
+
+- *"What are the biggest GEX walls right now?"*
+- *"Show me yesterday's DEX walls at 10:30 AM"*
+- *"Pull up the trade side stats — are puts or calls more aggressive today?"*
+- *"Compare the GEX profile at open vs close for last Thursday"*
+
 ### Historical Data
 
 All tools support historical analysis. Use `qd_set_page_date` to switch to a past trading day, then call any tool:
@@ -93,23 +107,37 @@ QuantData doesn't have an official API. This server uses reverse-engineered REST
 Claude Code → MCP (stdio) → quantdata-mcp server → QuantData REST API
 ```
 
+The setup creates a page called "MCP Agentic Page" on your QuantData account with 11 tool widgets. Your credentials and tool IDs are stored locally at `~/.quantdata-mcp/config.json`.
+
+## Commands
+
+```bash
+quantdata-mcp login              # Browser login + auto-setup (easiest)
+quantdata-mcp setup --browser    # Same as login
+quantdata-mcp setup --auth-token <TOKEN> --instance-id <ID>  # Manual setup
+quantdata-mcp serve              # Start MCP server (used by Claude Code)
+```
+
 ## Requirements
 
 - Python 3.11+
 - Active [QuantData](https://quantdata.us) subscription
-- The auth token may expire periodically — re-run `quantdata-mcp setup` with a fresh token if you get auth errors
+- For browser login: `pip install 'quantdata-mcp[browser]'` + `playwright install chromium`
 
 ## Troubleshooting
 
-**"Config not found" error:** Run `quantdata-mcp setup` first.
+**"Config not found" error:** Run `quantdata-mcp login` or `quantdata-mcp setup` first.
 
-**Auth errors (401):** Your token expired. Get a new one from the Network tab and re-run setup. Your existing page and tools will be reused.
+**Auth errors (401):** Your token expired. Re-run `quantdata-mcp login` to get a fresh one. Your existing page and tools will be reused.
 
 **Empty data:** Make sure you have an active QuantData subscription and the market was open on the date you're querying.
 
-**Token refresh:** Re-run setup with the new token — it will reuse your existing page and tools:
+**Browser login doesn't capture credentials:** Make sure you actually navigate to a page with charts after logging in. The server needs to see at least one API request to `core-lb-prod.quantdata.us`.
+
+**Playwright not installed:**
 ```bash
-quantdata-mcp setup --auth-token "NEW_TOKEN" --instance-id "SAME_ID"
+pip install 'quantdata-mcp[browser]'
+playwright install chromium
 ```
 
 ## License

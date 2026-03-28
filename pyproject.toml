@@ -11,6 +11,9 @@ dependencies = [
     "mcp[cli]>=1.0.0",
 ]
 
+[project.optional-dependencies]
+browser = ["playwright>=1.40.0"]
+
 [project.scripts]
 quantdata-mcp = "quantdata_mcp.__main__:main"
 
