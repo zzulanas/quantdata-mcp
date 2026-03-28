@@ -300,20 +300,46 @@ class QuantDataClient:
     # Page layout management
     # ------------------------------------------------------------------
 
+    def get_page(self, page_id: str) -> dict[str, Any] | None:
+        """Fetch a page's current state including layout.
+
+        Args:
+            page_id: QuantData page ID
+
+        Returns:
+            Page dict or None if failed
+        """
+        try:
+            response = self._make_request(
+                "GET", f"page?path=%2F{page_id}&type=CUSTOM", timeout=10
+            )
+            result: dict[str, Any] = response.json()
+            return result.get("response", {}).get("page")
+        except Exception as e:
+            logger.error(f"Failed to get page {page_id[:8]}...: {e}")
+            return None
+
     def update_page_layout(
         self,
         page_id: str,
         tools: list[tuple[str, str, str]],
+        page_name: str = "MCP Agentic Page",
     ) -> bool:
         """Update page layout to include tools as tabs.
+
+        Fetches the current page state, rebuilds the layout with the given tools,
+        and PUTs the full page object back. Preserves existing layout IDs.
 
         Args:
             page_id: QuantData page ID
             tools: List of (tool_id, name, component_type) tuples
+            page_name: Page name (used if page doesn't exist yet)
 
         Returns:
             True if successful, False otherwise
         """
+        import uuid
+
         tab_children = []
         for tool_id, name, component_type in tools:
             tab_children.append(
@@ -325,16 +351,69 @@ class QuantDataClient:
                 }
             )
 
-        layout = {
-            "type": "tabset",
-            "children": tab_children,
-        }
+        # Fetch current page to get all required fields + existing layout IDs
+        current = self.get_page(page_id)
 
-        payload = {
-            "id": page_id,
-            "layout": layout,
-            "lastUpdatedTime": int(datetime.now(UTC).timestamp() * 1000),
-        }
+        if current:
+            # Preserve existing row ID and tabset ID
+            existing_layout = current.get("layout", {})
+            row_id = existing_layout.get("id", str(uuid.uuid4()))
+            existing_children = existing_layout.get("children", [])
+            tabset_id = (
+                existing_children[0].get("id", str(uuid.uuid4()))
+                if existing_children
+                else str(uuid.uuid4())
+            )
+
+            current["layout"] = {
+                "type": "row",
+                "id": row_id,
+                "children": [
+                    {
+                        "type": "tabset",
+                        "id": tabset_id,
+                        "children": tab_children,
+                        "active": True,
+                    }
+                ],
+            }
+            current["lastUpdatedTime"] = int(datetime.now(UTC).timestamp() * 1000)
+            # Send only the page fields the API expects
+            payload = {
+                k: current[k]
+                for k in (
+                    "id", "userId", "type", "name", "description",
+                    "layout", "metadata", "isPublic", "createdTime", "lastUpdatedTime",
+                )
+                if k in current
+            }
+        else:
+            # Fallback: build full payload from scratch
+            self._ensure_user_id()
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            payload = {
+                "id": page_id,
+                "userId": self.user_id,
+                "type": "CUSTOM",
+                "name": page_name,
+                "description": "",
+                "layout": {
+                    "type": "row",
+                    "id": str(uuid.uuid4()),
+                    "children": [
+                        {
+                            "type": "tabset",
+                            "id": str(uuid.uuid4()),
+                            "children": tab_children,
+                            "active": True,
+                        }
+                    ],
+                },
+                "metadata": {"iconName": "IconRobotFace"},
+                "isPublic": False,
+                "createdTime": now_ms,
+                "lastUpdatedTime": now_ms,
+            }
 
         try:
             self._make_request("PUT", "page", json=payload, timeout=10)
@@ -951,7 +1030,7 @@ class QuantDataClient:
             List of page dicts
         """
         try:
-            response = self._make_request("GET", "page", timeout=10)
+            response = self._make_request("GET", "pages", timeout=10)
             result = response.json()
             pages: list[dict[str, Any]] = result.get("response", {}).get("pages", [])
             return pages
