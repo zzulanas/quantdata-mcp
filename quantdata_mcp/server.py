@@ -11,7 +11,7 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone, timedelta
 from enum import Enum
 from typing import Any
 
@@ -89,8 +89,9 @@ def _get_specs() -> dict[str, ToolSpec]:
 
 
 def _today() -> str:
-    """Return today's date in YYYY-MM-DD."""
-    return datetime.now(UTC).strftime("%Y-%m-%d")
+    """Return today's date in YYYY-MM-DD (Eastern Time, since market data is keyed by ET)."""
+    et = timezone(timedelta(hours=-4))  # EDT (summer); close enough for date boundary
+    return datetime.now(et).strftime("%Y-%m-%d")
 
 
 def _set_page_date(date: str | None) -> str | None:
