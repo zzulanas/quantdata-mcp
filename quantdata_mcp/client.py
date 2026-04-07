@@ -266,8 +266,10 @@ class QuantDataClient:
         Args:
             page_id: QuantData page ID
             session_date: Session date in YYYY-MM-DD format
-            ticker: Ticker symbol (default: SPX)
-            expiration_date: Expiration date in YYYY-MM-DD format (defaults to session_date for 0DTE)
+            ticker: Ticker symbol (default: SPX). Any optionable ticker works.
+            expiration_date: Expiration date in YYYY-MM-DD format.
+                             Defaults to session_date (0DTE). Set explicitly for
+                             weeklies/monthlies.
 
         Returns:
             True if successful, False otherwise

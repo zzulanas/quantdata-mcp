@@ -27,7 +27,19 @@ from quantdata_mcp.tools import GreekMode, ToolSpec, build_tool_specs
 mcp = FastMCP(
     "quantdata",
     instructions=(
-        "QuantData MCP server providing real-time SPX 0DTE options market data. "
+        "QuantData MCP server providing real-time and historical options market data. "
+        "Supports any optionable ticker (SPX, SPY, QQQ, AAPL, TSLA, etc.) and any trading date.\n\n"
+        "FILTERING RULES — read before querying:\n"
+        "1. session_date MUST be a valid trading day (not weekends or market holidays like Good Friday). "
+        "Before querying a historical date, verify it was a trading day.\n"
+        "2. expiration_date MUST match a real options chain for that ticker. "
+        "session_date and expiration_date are independent — they can differ.\n"
+        "3. SPX, SPY, and QQQ have DAILY expirations (Mon–Fri), so the default "
+        "expiration (= session_date, i.e. 0DTE) works for them.\n"
+        "4. Equity options (AAPL, TSLA, etc.) only have weekly (Fridays) or monthly "
+        "(3rd Friday) expirations — you MUST set expiration_date explicitly or you will get empty data. "
+        "Not all Fridays have weeklies; monthlies are the safest bet.\n\n"
+        "DEFAULTS: ticker=SPX, date=today, expiration_date=same as date (0DTE).\n"
         "All prices are in dollars. Exposure values are in millions. "
         "Drift values are cumulative premium flows. "
         "Use qd_get_market_snapshot for a comprehensive overview, "
@@ -94,21 +106,28 @@ def _today() -> str:
     return datetime.now(et).strftime("%Y-%m-%d")
 
 
-def _set_page_date(date: str | None) -> str | None:
-    """Set page filter to given date, return the date used (None if no change)."""
-    if date is None:
-        return None
+def _apply_page_filter(
+    date: str | None = None,
+    ticker: str = "SPX",
+    expiration_date: str | None = None,
+) -> dict[str, str]:
+    """Set page filter. Always sets it to ensure correct ticker/date. Returns what was set."""
     c = _get_client()
-    c.set_page_filter(_get_page_id(), session_date=date)
-    return date
+    session_date = date or _today()
+    c.set_page_filter(
+        _get_page_id(),
+        session_date=session_date,
+        ticker=ticker,
+        expiration_date=expiration_date,
+    )
+    return {"date": session_date, "ticker": ticker}
 
 
-def _restore_page_date(changed_date: str | None) -> None:
-    """If we changed the page date, restore to today."""
-    if changed_date is not None:
-        today = _today()
-        if changed_date != today:
-            _get_client().set_page_filter(_get_page_id(), session_date=today)
+def _restore_page_filter(changed: dict[str, str]) -> None:
+    """Restore page filter to today/SPX if we changed away from defaults."""
+    today = _today()
+    if changed.get("date") != today or changed.get("ticker") != "SPX":
+        _get_client().set_page_filter(_get_page_id(), session_date=today, ticker="SPX")
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +142,7 @@ GREEK_LABELS = {
 }
 
 
-def _fmt_walls(data: dict[str, Any] | None, greek_type: str, top_n: int = 10) -> str:
+def _fmt_walls(data: dict[str, Any] | None, greek_type: str, top_n: int = 10, ticker: str = "SPX") -> str:
     """Format exposure-by-strike data into a readable wall table."""
     if not data or "response" not in data:
         return f"No {GREEK_LABELS.get(greek_type, greek_type)} data available."
@@ -136,9 +155,9 @@ def _fmt_walls(data: dict[str, Any] | None, greek_type: str, top_n: int = 10) ->
     # The strike map is nested: expDate -> strike(cents) -> {CALL, PUT}
     exp_map = resp.get("expirationDateToStrikePriceInCentsToContractExposureMap", {})
     if not exp_map:
-        return f"No {label} strike data available. SPX price: ${price:,.2f}"
+        return f"No {label} strike data available. {ticker} price: ${price:,.2f}"
 
-    # Flatten all expirations (0DTE we typically have one)
+    # Flatten all expirations
     walls: list[dict[str, Any]] = []
     for _exp, strike_map in exp_map.items():
         for strike_str, exposure in strike_map.items():
@@ -159,7 +178,7 @@ def _fmt_walls(data: dict[str, Any] | None, greek_type: str, top_n: int = 10) ->
     walls.sort(key=lambda w: abs(w["net"]), reverse=True)
     walls = walls[:top_n]
 
-    lines = [f"{label} — SPX ${price:,.2f}", ""]
+    lines = [f"{label} — {ticker} ${price:,.2f}", ""]
     lines.append(
         f"{'Strike':>10}  {'Net ($M)':>10}  {'Call ($M)':>10}  {'Put ($M)':>10}  {'Type':>6}"
     )
@@ -192,7 +211,7 @@ def _fmt_drift(data: dict[str, Any] | None, last_n: int = 10) -> str:
     total_dir = "BULLISH" if total_net > 1000 else "BEARISH" if total_net < -1000 else "NEUTRAL"
 
     lines = [f"Net Drift — Last {len(entries)} entries (of {len(drift_array)} total)", ""]
-    lines.append(f"{'Time':>12}  {'Call ($)':>12}  {'Put ($)':>12}  {'Net ($)':>12}  {'SPX':>10}")
+    lines.append(f"{'Time':>12}  {'Call ($)':>12}  {'Put ($)':>12}  {'Net ($)':>12}  {'Price':>10}")
     lines.append("-" * 66)
 
     for entry in entries:
@@ -241,7 +260,7 @@ def _fmt_max_pain(data: dict[str, Any] | None) -> str:
 
     lines = [
         f"Max Pain: ${mp:,.0f}",
-        f"SPX Price: ${price:,.2f}",
+        f"Price: ${price:,.2f}",
         f"Distance: {abs(distance):,.2f} pts ({abs(dist_pct):.2f}%) {direction} max pain",
     ]
     if abs(dist_pct) < 0.3:
@@ -365,7 +384,7 @@ def _fmt_net_flow(data: dict[str, Any] | None, last_n: int = 10) -> str:
     return "\n".join(lines)
 
 
-def _fmt_oi_by_strike(data: dict[str, Any] | None, near_strike: float | None = None) -> str:
+def _fmt_oi_by_strike(data: dict[str, Any] | None, near_strike: float | None = None, ticker: str = "SPX") -> str:
     """Format open interest by strike."""
     if not data or "response" not in data:
         return "No OI data available."
@@ -393,7 +412,7 @@ def _fmt_oi_by_strike(data: dict[str, Any] | None, near_strike: float | None = N
     price_cents = resp.get("stockPriceInCents", 0)
     price = price_cents / 100
 
-    lines = [f"Open Interest by Strike — SPX ${price:,.2f}", ""]
+    lines = [f"Open Interest by Strike — {ticker} ${price:,.2f}", ""]
     lines.append(
         f"{'Strike':>10}  {'Call OI':>10}  {'Put OI':>10}  {'Total OI':>10}  {'P/C Ratio':>10}"
     )
@@ -462,22 +481,26 @@ class DataModeEnum(str, Enum):
 @mcp.tool()
 def qd_get_exposure_by_strike(
     greek_type: GreekTypeEnum = GreekTypeEnum.GAMMA,
+    ticker: str = "SPX",
     date: str | None = None,
+    expiration_date: str | None = None,
     time_minutes: int | None = None,
 ) -> str:
     """Get GEX/DEX/CEX/VEX wall data — top exposure levels by strike price.
 
     Shows where the biggest gamma/delta/charm/vanna walls are, indicating
-    key support/resistance levels for SPX.
+    key support/resistance levels.
 
     Args:
         greek_type: GAMMA (GEX), DELTA (DEX), CHARM (CEX), or VANNA (VEX)
+        ticker: Ticker symbol (default: SPX). Any optionable ticker works (SPY, QQQ, AAPL, etc.)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE; set differently for non-0DTE)
         time_minutes: Minutes from midnight for historical playback (570=9:30AM, 960=4PM)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["exposure_by_strike"]
 
         # Set greek mode on the tool
@@ -496,15 +519,17 @@ def qd_get_exposure_by_strike(
         if greek_type.value != "GAMMA":
             c.update_tool_metadata(tool.tool_id, {"greekModeType": "GAMMA"})
 
-        _restore_page_date(changed)
-        return _fmt_walls(data, greek_type.value)
+        _restore_page_filter(changed)
+        return _fmt_walls(data, greek_type.value, ticker=ticker)
     except Exception as e:
         return f"Error fetching {greek_type.value} walls: {e}"
 
 
 @mcp.tool()
 def qd_get_net_drift(
+    ticker: str = "SPX",
     date: str | None = None,
+    expiration_date: str | None = None,
     last_n: int = 10,
 ) -> str:
     """Get net drift data — cumulative call vs put premium flow.
@@ -513,15 +538,17 @@ def qd_get_net_drift(
     Positive net = more call premium, negative = more put premium.
 
     Args:
+        ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
         last_n: Number of recent entries to show (default: 10)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["net_drift"]
         data = c.fetch_net_drift(tool.tool_id)
-        _restore_page_date(changed)
+        _restore_page_filter(changed)
         return _fmt_drift(data, last_n)
     except Exception as e:
         return f"Error fetching net drift: {e}"
@@ -530,7 +557,9 @@ def qd_get_net_drift(
 @mcp.tool()
 def qd_get_trade_side_stats(
     data_mode: DataModeEnum = DataModeEnum.PREMIUM,
+    ticker: str = "SPX",
     date: str | None = None,
+    expiration_date: str | None = None,
 ) -> str:
     """Get contract side statistics — trade aggression breakdown.
 
@@ -539,60 +568,73 @@ def qd_get_trade_side_stats(
 
     Args:
         data_mode: PREMIUM (dollar value), TRADE_COUNT, or VOLUME
+        ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["contract_side_stats"]
 
         # Set data mode
         c.update_tool_metadata(tool.tool_id, {"dataModeType": data_mode.value})
 
         data = c.fetch_trade_side_stats(tool.tool_id)
-        _restore_page_date(changed)
+        _restore_page_filter(changed)
         return _fmt_trade_side_stats(data)
     except Exception as e:
         return f"Error fetching trade side stats: {e}"
 
 
 @mcp.tool()
-def qd_get_max_pain(date: str | None = None) -> str:
+def qd_get_max_pain(
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+) -> str:
     """Get max pain strike — the price where option holders lose the most.
 
     Price tends to gravitate toward max pain near expiration.
-    Useful for gauging end-of-day price target on 0DTE.
 
     Args:
+        ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["max_pain"]
         data = c.fetch_max_pain(tool.tool_id)
-        _restore_page_date(changed)
+        _restore_page_filter(changed)
         return _fmt_max_pain(data)
     except Exception as e:
         return f"Error fetching max pain: {e}"
 
 
 @mcp.tool()
-def qd_get_iv_rank(date: str | None = None) -> str:
+def qd_get_iv_rank(
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+) -> str:
     """Get IV rank — where current implied volatility sits in its historical range.
 
     Low IVR (<30%) = options are cheap, good for buying.
     High IVR (>70%) = options are expensive, need larger moves for profit.
 
     Args:
+        ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["iv_rank"]
         data = c.fetch_iv_rank(tool.tool_id)
-        _restore_page_date(changed)
+        _restore_page_filter(changed)
         return _fmt_iv_rank(data, date)
     except Exception as e:
         return f"Error fetching IV rank: {e}"
@@ -600,7 +642,9 @@ def qd_get_iv_rank(date: str | None = None) -> str:
 
 @mcp.tool()
 def qd_get_net_flow(
+    ticker: str = "SPX",
     date: str | None = None,
+    expiration_date: str | None = None,
     last_n: int = 10,
 ) -> str:
     """Get net flow data — call/put premium flow over time.
@@ -608,15 +652,17 @@ def qd_get_net_flow(
     Similar to net drift but shows raw premium flow rather than cumulative.
 
     Args:
+        ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
         last_n: Number of recent entries to show (default: 10)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["net_flow"]
         data = c.fetch_net_flow(tool.tool_id)
-        _restore_page_date(changed)
+        _restore_page_filter(changed)
         return _fmt_net_flow(data, last_n)
     except Exception as e:
         return f"Error fetching net flow: {e}"
@@ -624,7 +670,9 @@ def qd_get_net_flow(
 
 @mcp.tool()
 def qd_get_oi_by_strike(
+    ticker: str = "SPX",
     date: str | None = None,
+    expiration_date: str | None = None,
     near_strike: float | None = None,
 ) -> str:
     """Get open interest by strike — put/call OI distribution.
@@ -632,53 +680,67 @@ def qd_get_oi_by_strike(
     High OI strikes act as magnets/barriers. Put/Call ratio shows market positioning.
 
     Args:
+        ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
         near_strike: Filter to strikes within $50 of this price
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["oi_by_strike"]
         data = c.fetch_oi_by_strike(tool.tool_id)
-        _restore_page_date(changed)
-        return _fmt_oi_by_strike(data, near_strike)
+        _restore_page_filter(changed)
+        return _fmt_oi_by_strike(data, near_strike, ticker=ticker)
     except Exception as e:
         return f"Error fetching OI by strike: {e}"
 
 
 @mcp.tool()
-def qd_get_contract_statistics(date: str | None = None) -> str:
+def qd_get_contract_statistics(
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+) -> str:
     """Get contract statistics — total premium, trade count, volume by call/put.
 
     Overview of the day's options activity levels.
 
     Args:
+        ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["contract_statistics"]
         data = c.fetch_contract_statistics(tool.tool_id)
-        _restore_page_date(changed)
+        _restore_page_filter(changed)
         return _fmt_contract_stats(data)
     except Exception as e:
         return f"Error fetching contract statistics: {e}"
 
 
 @mcp.tool()
-def qd_get_market_snapshot(date: str | None = None) -> str:
+def qd_get_market_snapshot(
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+) -> str:
     """Get a comprehensive market snapshot — GEX walls, DEX walls, net drift, max pain, trade side stats, and contract stats.
 
     Best tool for a quick overview of the current market state. Calls multiple
     data sources and formats them into a single readable report.
 
     Args:
+        ticker: Ticker symbol (default: SPX). Any optionable ticker works.
         date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
     """
     try:
         c = _get_client()
-        changed = _set_page_date(date)
+        changed = _apply_page_filter(date, ticker, expiration_date)
 
         sections: list[str] = []
 
@@ -686,12 +748,12 @@ def qd_get_market_snapshot(date: str | None = None) -> str:
         tool_exp = _get_specs()["exposure_by_strike"]
         c.update_tool_metadata(tool_exp.tool_id, {"greekModeType": "GAMMA"})
         gex_data = c.fetch_strike_data(tool_exp.tool_id)
-        sections.append(_fmt_walls(gex_data, "GAMMA"))
+        sections.append(_fmt_walls(gex_data, "GAMMA", ticker=ticker))
 
         # DEX walls
         c.update_tool_metadata(tool_exp.tool_id, {"greekModeType": "DELTA"})
         dex_data = c.fetch_strike_data(tool_exp.tool_id)
-        sections.append(_fmt_walls(dex_data, "DELTA"))
+        sections.append(_fmt_walls(dex_data, "DELTA", ticker=ticker))
 
         # Restore to GAMMA
         c.update_tool_metadata(tool_exp.tool_id, {"greekModeType": "GAMMA"})
@@ -712,7 +774,7 @@ def qd_get_market_snapshot(date: str | None = None) -> str:
         cs_data = c.fetch_contract_statistics(_get_specs()["contract_statistics"].tool_id)
         sections.append(_fmt_contract_stats(cs_data))
 
-        _restore_page_date(changed)
+        _restore_page_filter(changed)
 
         divider = "\n" + "=" * 56 + "\n"
         return divider.join(sections)
@@ -721,24 +783,35 @@ def qd_get_market_snapshot(date: str | None = None) -> str:
 
 
 @mcp.tool()
-def qd_set_page_date(date: str, ticker: str = "SPX") -> str:
-    """Change the session date for historical analysis.
+def qd_set_page_date(
+    date: str,
+    ticker: str = "SPX",
+    expiration_date: str | None = None,
+) -> str:
+    """Change the session date, ticker, and/or expiration for historical analysis.
 
-    Sets the QuantData page filter to a specific date and ticker so
-    subsequent tool calls return data for that session.
+    Sets the QuantData page filter so subsequent tool calls return data
+    for that session. Useful for switching tickers or analyzing non-0DTE expirations.
 
     Args:
         date: Session date in YYYY-MM-DD format
-        ticker: Ticker symbol (default: SPX)
+        ticker: Ticker symbol (default: SPX). Any optionable ticker works.
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE; set differently for weeklies/monthlies)
     """
     try:
         c = _get_client()
-        ok = c.set_page_filter(_get_page_id(), session_date=date, ticker=ticker)
+        ok = c.set_page_filter(
+            _get_page_id(),
+            session_date=date,
+            ticker=ticker,
+            expiration_date=expiration_date,
+        )
+        exp_label = expiration_date or date
         if ok:
-            return f"Page date set to {date} ({ticker}). All subsequent tool calls will return data for this session."
-        return f"Failed to set page date to {date}."
+            return f"Page set to {ticker} on {date} (expiration: {exp_label}). All subsequent tool calls will return data for this session."
+        return f"Failed to set page filter."
     except Exception as e:
-        return f"Error setting page date: {e}"
+        return f"Error setting page filter: {e}"
 
 
 
