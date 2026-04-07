@@ -508,6 +508,189 @@ def _fmt_contract_stats(data: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def _fmt_exposure_by_expiration(data: dict[str, Any] | None, greek_type: str, ticker: str = "SPX") -> str:
+    """Format exposure-by-expiration data into a term structure table."""
+    if not data or "response" not in data:
+        return f"No {GREEK_LABELS.get(greek_type, greek_type)} expiration data available."
+
+    resp = data["response"]
+    price_cents = resp.get("stockPriceInCents", 0)
+    price = price_cents / 100
+    label = GREEK_LABELS.get(greek_type, greek_type)
+
+    # The expiration map: expDate -> strike(cents) -> {CALL, PUT}
+    exp_map = resp.get("expirationDateToStrikePriceInCentsToContractExposureMap", {})
+    if not exp_map:
+        return f"No {label} expiration data available. {ticker} price: ${price:,.2f}"
+
+    # Aggregate by expiration date
+    exp_totals: list[dict[str, Any]] = []
+    for exp_date, strike_map in exp_map.items():
+        total_call = 0.0
+        total_put = 0.0
+        for _strike_str, exposure in strike_map.items():
+            total_call += exposure.get("CALL", 0)
+            total_put += exposure.get("PUT", 0)
+        net = total_call + total_put
+        exp_totals.append({
+            "expiration": exp_date,
+            "call": total_call / 1_000_000,
+            "put": total_put / 1_000_000,
+            "net": net / 1_000_000,
+        })
+
+    # Sort by expiration date
+    exp_totals.sort(key=lambda e: e["expiration"])
+
+    lines = [f"{label} by Expiration (Term Structure) — {ticker} ${price:,.2f}", ""]
+    lines.append(
+        f"{'Expiration':>12}  {'Net ($M)':>10}  {'Call ($M)':>10}  {'Put ($M)':>10}"
+    )
+    lines.append("-" * 50)
+    for e in exp_totals:
+        lines.append(
+            f"{e['expiration']:>12}  {e['net']:>+10.2f}  {e['call']:>10.2f}  {e['put']:>10.2f}"
+        )
+
+    return "\n".join(lines)
+
+
+def _fmt_contract_price(data: dict[str, Any] | None) -> str:
+    """Format contract price OHLCV data."""
+    if not data or "response" not in data:
+        return "No contract price data available."
+
+    resp = data["response"]
+
+    # Try common response keys for OHLCV time series
+    price_data = resp.get("contractPriceOverTime", resp.get("priceOverTime", []))
+    if not price_data and isinstance(resp, dict):
+        # Fallback: look for any list-like data
+        for key, val in resp.items():
+            if isinstance(val, list) and val:
+                price_data = val
+                break
+
+    if not price_data:
+        # Dump available keys for debugging
+        return f"No contract price entries. Response keys: {list(resp.keys())}"
+
+    lines = ["Contract Price (OHLCV)", ""]
+    lines.append(
+        f"{'Time':>12}  {'Open':>10}  {'High':>10}  {'Low':>10}  {'Close':>10}  {'Volume':>10}"
+    )
+    lines.append("-" * 72)
+
+    for entry in price_data:
+        if isinstance(entry, (list, tuple)) and len(entry) >= 6:
+            ts = entry[0]
+            o = entry[1] / 100 if entry[1] else 0
+            h = entry[2] / 100 if entry[2] else 0
+            lo = entry[3] / 100 if entry[3] else 0
+            cl = entry[4] / 100 if entry[4] else 0
+            vol = entry[5] if len(entry) > 5 else 0
+            try:
+                t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+            except (OSError, ValueError):
+                t = str(ts)
+            lines.append(
+                f"{t:>12}  ${o:>9.2f}  ${h:>9.2f}  ${lo:>9.2f}  ${cl:>9.2f}  {vol:>10,}"
+            )
+        elif isinstance(entry, dict):
+            ts = entry.get("timestamp", entry.get("time", ""))
+            o = entry.get("open", entry.get("openInCents", 0))
+            h = entry.get("high", entry.get("highInCents", 0))
+            lo = entry.get("low", entry.get("lowInCents", 0))
+            cl = entry.get("close", entry.get("closeInCents", 0))
+            vol = entry.get("volume", 0)
+            # Convert cents if needed
+            if "InCents" in str(entry.keys()):
+                o, h, lo, cl = o / 100, h / 100, lo / 100, cl / 100
+            if isinstance(ts, (int, float)):
+                try:
+                    ts = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+                except (OSError, ValueError):
+                    pass
+            lines.append(
+                f"{str(ts):>12}  ${o:>9.2f}  ${h:>9.2f}  ${lo:>9.2f}  ${cl:>9.2f}  {vol:>10,}"
+            )
+
+    return "\n".join(lines)
+
+
+def _fmt_order_flow(data: dict[str, Any] | None, last_n: int = 20) -> str:
+    """Format consolidated order flow data."""
+    if not data or "response" not in data:
+        return "No order flow data available."
+
+    resp = data["response"]
+
+    # Try common response keys
+    flow_entries = resp.get("consolidatedFlows", resp.get("flows", resp.get("orders", [])))
+    if not flow_entries and isinstance(resp, dict):
+        for key, val in resp.items():
+            if isinstance(val, list) and val:
+                flow_entries = val
+                break
+
+    if not flow_entries:
+        return f"No order flow entries. Response keys: {list(resp.keys())}"
+
+    # Take last N entries
+    entries = flow_entries[-last_n:] if len(flow_entries) > last_n else flow_entries
+
+    lines = [f"Order Flow — Last {len(entries)} entries (of {len(flow_entries)} total)", ""]
+    lines.append(
+        f"{'Time':>12}  {'Ticker':>6}  {'Strike':>10}  {'Type':>4}  {'Side':>4}  "
+        f"{'Premium':>12}  {'Size':>8}  {'Sentiment':>10}"
+    )
+    lines.append("-" * 82)
+
+    for entry in entries:
+        if isinstance(entry, (list, tuple)):
+            # Array format: [timestamp, ticker, strike_cents, contract_type, side, premium_cents, size, ...]
+            ts = entry[0] if len(entry) > 0 else 0
+            tkr = entry[1] if len(entry) > 1 else ""
+            strike = (entry[2] / 100) if len(entry) > 2 and entry[2] else 0
+            ct = entry[3] if len(entry) > 3 else ""
+            side = entry[4] if len(entry) > 4 else ""
+            prem = (entry[5] / 100) if len(entry) > 5 and entry[5] else 0
+            size = entry[6] if len(entry) > 6 else 0
+            sent = entry[7] if len(entry) > 7 else ""
+            try:
+                t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+            except (OSError, ValueError, TypeError):
+                t = str(ts)
+            ct_short = "C" if "CALL" in str(ct) else "P" if "PUT" in str(ct) else str(ct)
+            lines.append(
+                f"{t:>12}  {str(tkr):>6}  ${strike:>8,.0f}  {ct_short:>4}  {str(side):>4}  "
+                f"${prem:>10,.0f}  {size:>8,}  {str(sent):>10}"
+            )
+        elif isinstance(entry, dict):
+            ts = entry.get("timestamp", entry.get("time", entry.get("executedAtTimestamp", "")))
+            tkr = entry.get("ticker", entry.get("symbol", ""))
+            strike_raw = entry.get("strikePriceInCents", entry.get("strike", 0))
+            strike = strike_raw / 100 if strike_raw > 1000 else strike_raw  # heuristic for cents vs dollars
+            ct = entry.get("contractType", entry.get("type", ""))
+            side = entry.get("tradeSideCode", entry.get("side", ""))
+            prem_raw = entry.get("premiumInCents", entry.get("premium", 0))
+            prem = prem_raw / 100 if prem_raw > 10000 else prem_raw
+            size = entry.get("size", entry.get("volume", entry.get("quantity", 0)))
+            sent = entry.get("sentiment", "")
+            if isinstance(ts, (int, float)):
+                try:
+                    ts = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+                except (OSError, ValueError):
+                    pass
+            ct_short = "C" if "CALL" in str(ct) else "P" if "PUT" in str(ct) else str(ct)
+            lines.append(
+                f"{str(ts):>12}  {str(tkr):>6}  ${strike:>8,.0f}  {ct_short:>4}  {str(side):>4}  "
+                f"${prem:>10,.0f}  {size:>8,}  {str(sent):>10}"
+            )
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
@@ -540,6 +723,26 @@ class TradeSideEnum(str, Enum):
     BB = "BB"   # Below Bid (aggressive sell)
 
 
+class RepresentationModeEnum(str, Enum):
+    PER_1PCT = "PER_ONE_PERCENT_MOVE"   # Exposure per 1% move (default)
+    PER_1USD = "PER_ONE_DOLLAR_MOVE"    # Exposure per $1 move
+    RAW = "RAW"                          # Raw exposure values
+
+
+class AggregationEnum(str, Enum):
+    ONE_MIN = "ONE_MINUTE"
+    FIVE_MIN = "FIVE_MINUTE"
+    TEN_MIN = "TEN_MINUTE"
+    FIFTEEN_MIN = "FIFTEEN_MINUTE"
+    THIRTY_MIN = "THIRTY_MINUTE"
+    ONE_HOUR = "ONE_HOUR"
+
+
+class ContractTypeEnum(str, Enum):
+    CALL = "CALL"
+    PUT = "PUT"
+
+
 @mcp.tool()
 def qd_get_exposure_by_strike(
     greek_type: GreekTypeEnum = GreekTypeEnum.GAMMA,
@@ -547,6 +750,8 @@ def qd_get_exposure_by_strike(
     date: str | None = None,
     expiration_date: str | None = None,
     time_minutes: int | None = None,
+    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_1PCT,
+    is_net: bool = True,
 ) -> str:
     """Get GEX/DEX/CEX/VEX wall data — top exposure levels by strike price.
 
@@ -559,27 +764,36 @@ def qd_get_exposure_by_strike(
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE; set differently for non-0DTE)
         time_minutes: Minutes from midnight for historical playback (570=9:30AM, 960=4PM)
+        representation_mode: PER_1PCT (per 1% move, default), PER_1USD (per $1 move), or RAW
+        is_net: True for net (call+put combined), False for gross (separate). Default: True.
     """
     try:
         c = _get_client()
         changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["exposure_by_strike"]
 
-        # Set greek mode on the tool
+        # Set greek mode, representation mode, and net/gross
         greek_mode = GreekMode(greek_type.value)
-        c.update_tool_metadata(tool.tool_id, {"greekModeType": greek_mode.value})
+        c.update_tool_metadata(tool.tool_id, {
+            "greekModeType": greek_mode.value,
+            "representationModeType": representation_mode.value,
+            "isNet": is_net,
+        })
 
         if time_minutes is not None:
             c.set_tool_time(tool.tool_id, time_minutes)
 
-        data = c.fetch_strike_data(tool.tool_id)
-
-        if time_minutes is not None:
-            c.reset_to_live(tool.tool_id)
-
-        # Restore to GAMMA for next caller
-        if greek_type.value != "GAMMA":
-            c.update_tool_metadata(tool.tool_id, {"greekModeType": "GAMMA"})
+        try:
+            data = c.fetch_strike_data(tool.tool_id)
+        finally:
+            if time_minutes is not None:
+                c.reset_to_live(tool.tool_id)
+            # Restore defaults
+            c.update_tool_metadata(tool.tool_id, {
+                "greekModeType": "GAMMA",
+                "representationModeType": "PER_ONE_PERCENT_MOVE",
+                "isNet": True,
+            })
 
         _restore_page_filter(changed)
         return _fmt_walls(data, greek_type.value, ticker=ticker)
@@ -594,6 +808,7 @@ def qd_get_net_drift(
     expiration_date: str | None = None,
     moneyness: list[MoneynessEnum] | None = None,
     strikes: list[float] | None = None,
+    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
     last_n: int = 10,
 ) -> str:
     """Get net drift data — cumulative call vs put premium flow.
@@ -607,12 +822,16 @@ def qd_get_net_drift(
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
         moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine (e.g. ["OTM", "ATM"]). Default: all.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0, 5700.0]). Default: all.
+        aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
         last_n: Number of recent entries to show (default: 10)
     """
     try:
         c = _get_client()
         changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["net_drift"]
+
+        c.update_tool_metadata(tool.tool_id, {"aggregationPeriodType": aggregation.value})
+
         original_filter = _apply_tool_filter(
             tool.tool_id,
             moneyness=[m.value for m in moneyness] if moneyness else None,
@@ -622,6 +841,7 @@ def qd_get_net_drift(
             data = c.fetch_net_drift(tool.tool_id)
         finally:
             _restore_tool_filter(tool.tool_id, original_filter)
+            c.update_tool_metadata(tool.tool_id, {"aggregationPeriodType": "ONE_MINUTE"})
         _restore_page_filter(changed)
         return _fmt_drift(data, last_n)
     except Exception as e:
@@ -704,6 +924,9 @@ def qd_get_iv_rank(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
+    lookback_period: int = 365,
+    maturity: int = 30,
+    contract_type: list[ContractTypeEnum] | None = None,
 ) -> str:
     """Get IV rank — where current implied volatility sits in its historical range.
 
@@ -714,12 +937,44 @@ def qd_get_iv_rank(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
+        lookback_period: Number of days to look back for IVR calculation (default: 365)
+        maturity: Target DTE for IV curve (default: 30)
+        contract_type: Filter to CALL, PUT, or both. Default: both (None).
     """
     try:
         c = _get_client()
         changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["iv_rank"]
-        data = c.fetch_iv_rank(tool.tool_id)
+
+        c.update_tool_metadata(tool.tool_id, {
+            "lookBackPeriod": lookback_period,
+            "maturity": maturity,
+        })
+
+        # Apply contract type filter if specified
+        original_filter: dict[str, Any] | None = None
+        if contract_type:
+            tool_dto = c.get_tool(tool.tool_id)
+            if tool_dto:
+                original_filter = tool_dto.get("metadata", {}).get("filter", {})
+                new_filter = dict(original_filter) if original_filter else {}
+                new_filter["contractType"] = {
+                    "filterOperationType": "EQUALS",
+                    "value": [ct.value for ct in contract_type],
+                }
+                c.update_tool_metadata(tool.tool_id, {"filter": new_filter})
+
+        try:
+            data = c.fetch_iv_rank(tool.tool_id)
+        finally:
+            # Restore defaults
+            c.update_tool_metadata(tool.tool_id, {
+                "lookBackPeriod": 365,
+                "maturity": 30,
+            })
+            if original_filter is not None:
+                c.update_tool_metadata(tool.tool_id, {"filter": original_filter})
+
         _restore_page_filter(changed)
         return _fmt_iv_rank(data, date)
     except Exception as e:
@@ -734,6 +989,8 @@ def qd_get_net_flow(
     moneyness: list[MoneynessEnum] | None = None,
     trade_side: list[TradeSideEnum] | None = None,
     strikes: list[float] | None = None,
+    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
+    data_mode: DataModeEnum = DataModeEnum.PREMIUM,
     last_n: int = 10,
 ) -> str:
     """Get net flow data — call/put premium flow over time.
@@ -747,12 +1004,20 @@ def qd_get_net_flow(
         moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
         trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
+        aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
+        data_mode: PREMIUM (dollar value, default) or VOLUME.
         last_n: Number of recent entries to show (default: 10)
     """
     try:
         c = _get_client()
         changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["net_flow"]
+
+        c.update_tool_metadata(tool.tool_id, {
+            "aggregationPeriodType": aggregation.value,
+            "dataModeType": data_mode.value,
+        })
+
         original_filter = _apply_tool_filter(
             tool.tool_id,
             moneyness=[m.value for m in moneyness] if moneyness else None,
@@ -763,6 +1028,10 @@ def qd_get_net_flow(
             data = c.fetch_net_flow(tool.tool_id)
         finally:
             _restore_tool_filter(tool.tool_id, original_filter)
+            c.update_tool_metadata(tool.tool_id, {
+                "aggregationPeriodType": "ONE_MINUTE",
+                "dataModeType": "PREMIUM",
+            })
         _restore_page_filter(changed)
         return _fmt_net_flow(data, last_n)
     except Exception as e:
@@ -836,6 +1105,204 @@ def qd_get_contract_statistics(
         return _fmt_contract_stats(data)
     except Exception as e:
         return f"Error fetching contract statistics: {e}"
+
+
+@mcp.tool()
+def qd_get_exposure_by_expiration(
+    greek_type: GreekTypeEnum = GreekTypeEnum.GAMMA,
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_1PCT,
+    is_net: bool = True,
+    strikes: list[float] | None = None,
+) -> str:
+    """Get greek exposure by expiration date — term structure view.
+
+    Shows how gamma/delta/charm/vanna exposure is distributed across
+    expiration dates, revealing where the most hedging activity is concentrated.
+
+    Args:
+        greek_type: GAMMA (GEX), DELTA (DEX), CHARM (CEX), or VANNA (VEX)
+        ticker: Ticker symbol (default: SPX). Any optionable ticker works.
+        date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE)
+        representation_mode: PER_1PCT (per 1% move, default), PER_1USD (per $1 move), or RAW
+        is_net: True for net (call+put combined), False for gross (separate). Default: True.
+        strikes: Filter to specific strike prices in dollars (e.g. [5600.0, 5700.0]). Default: all.
+    """
+    try:
+        c = _get_client()
+        changed = _apply_page_filter(date, ticker, expiration_date)
+        tool = _get_specs()["exposure_by_expiration"]
+
+        greek_mode = GreekMode(greek_type.value)
+        c.update_tool_metadata(tool.tool_id, {
+            "greekModeType": greek_mode.value,
+            "representationModeType": representation_mode.value,
+            "isNet": is_net,
+        })
+
+        original_filter = _apply_tool_filter(
+            tool.tool_id,
+            strikes=[int(s * 100) for s in strikes] if strikes else None,
+        )
+        try:
+            data = c.fetch_exposure_by_expiration(tool.tool_id)
+        finally:
+            _restore_tool_filter(tool.tool_id, original_filter)
+            c.update_tool_metadata(tool.tool_id, {
+                "greekModeType": "GAMMA",
+                "representationModeType": "PER_ONE_PERCENT_MOVE",
+                "isNet": True,
+            })
+
+        _restore_page_filter(changed)
+        return _fmt_exposure_by_expiration(data, greek_type.value, ticker=ticker)
+    except Exception as e:
+        return f"Error fetching exposure by expiration: {e}"
+
+
+@mcp.tool()
+def qd_get_contract_price(
+    strike: float,
+    contract_type: ContractTypeEnum = ContractTypeEnum.CALL,
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
+) -> str:
+    """Get OHLCV price data for a specific options contract.
+
+    Shows intraday price action for a single call or put contract at a given strike.
+
+    Args:
+        strike: Strike price in dollars (e.g. 5600.0)
+        contract_type: CALL or PUT (default: CALL)
+        ticker: Ticker symbol (default: SPX). Any optionable ticker works.
+        date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE)
+        aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
+    """
+    try:
+        c = _get_client()
+        changed = _apply_page_filter(date, ticker, expiration_date)
+        tool = _get_specs()["contract_price_time"]
+
+        c.update_tool_metadata(tool.tool_id, {
+            "aggregationPeriodType": aggregation.value,
+        })
+
+        # Set contract type and strike filters
+        tool_dto = c.get_tool(tool.tool_id)
+        original_filter: dict[str, Any] | None = None
+        if tool_dto:
+            original_filter = tool_dto.get("metadata", {}).get("filter", {})
+            new_filter = dict(original_filter) if original_filter else {}
+            new_filter["contractType"] = {
+                "filterOperationType": "EQUALS",
+                "value": contract_type.value,
+            }
+            new_filter["strikePriceInCents"] = {
+                "filterOperationType": "EQUALS",
+                "value": int(strike * 100),
+            }
+            c.update_tool_metadata(tool.tool_id, {"filter": new_filter})
+
+        try:
+            data = c.fetch_contract_price_time(tool.tool_id)
+        finally:
+            c.update_tool_metadata(tool.tool_id, {
+                "aggregationPeriodType": "ONE_MINUTE",
+            })
+            if original_filter is not None:
+                c.update_tool_metadata(tool.tool_id, {"filter": original_filter})
+
+        _restore_page_filter(changed)
+        return _fmt_contract_price(data)
+    except Exception as e:
+        return f"Error fetching contract price: {e}"
+
+
+@mcp.tool()
+def qd_get_order_flow(
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+    contract_type: ContractTypeEnum | None = None,
+    moneyness: list[MoneynessEnum] | None = None,
+    trade_side: list[TradeSideEnum] | None = None,
+    min_premium: float | None = None,
+    strikes: list[float] | None = None,
+    last_n: int = 20,
+) -> str:
+    """Get consolidated order flow — individual large trades with full detail.
+
+    The most filter-rich tool. Shows individual option trades with strike, type,
+    side (aggression), premium, size, and sentiment.
+
+    Args:
+        ticker: Ticker symbol (default: SPX). Any optionable ticker works.
+        date: Session date YYYY-MM-DD (default: today)
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE)
+        contract_type: Filter to CALL or PUT only. Default: both.
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
+        trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
+        min_premium: Minimum premium in dollars to filter trades (e.g. 10000 for $10K+). Default: no minimum.
+        strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
+        last_n: Number of recent entries to show (default: 20)
+    """
+    try:
+        c = _get_client()
+        changed = _apply_page_filter(date, ticker, expiration_date)
+        tool = _get_specs()["order_flow"]
+
+        # Build filter inline since order_flow has many specialized fields
+        tool_dto = c.get_tool(tool.tool_id)
+        original_filter: dict[str, Any] | None = None
+        if tool_dto:
+            original_filter = tool_dto.get("metadata", {}).get("filter", {})
+            new_filter = dict(original_filter) if original_filter else {}
+
+            if contract_type is not None:
+                new_filter["contractType"] = {
+                    "filterOperationType": "EQUALS",
+                    "value": contract_type.value,
+                }
+            if moneyness is not None:
+                new_filter["moneynessMoneyType"] = {
+                    "filterOperationType": "EQUALS",
+                    "value": [m.value for m in moneyness],
+                }
+            if trade_side is not None:
+                new_filter["tradeSideCodeType"] = {
+                    "filterOperationType": "EQUALS",
+                    "value": [t.value for t in trade_side],
+                }
+            if min_premium is not None:
+                new_filter["premiumInCents"] = {
+                    "filterOperationType": "GREATER_THAN_OR_EQUAL_TO",
+                    "value": int(min_premium * 100),
+                }
+            if strikes is not None:
+                new_filter["strikePriceInCents"] = {
+                    "filterOperationType": "EQUALS",
+                    "value": [int(s * 100) for s in strikes],
+                }
+
+            if any([contract_type, moneyness, trade_side, min_premium, strikes]):
+                c.update_tool_metadata(tool.tool_id, {"filter": new_filter})
+
+        try:
+            data = c.fetch_consolidated_flow(tool.tool_id)
+        finally:
+            if original_filter is not None:
+                c.update_tool_metadata(tool.tool_id, {"filter": original_filter})
+
+        _restore_page_filter(changed)
+        return _fmt_order_flow(data, last_n)
+    except Exception as e:
+        return f"Error fetching order flow: {e}"
 
 
 @mcp.tool()

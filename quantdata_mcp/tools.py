@@ -47,6 +47,26 @@ class TradeSideCodeType(str, Enum):
     BB = "BB"   # Below Bid (aggressive sell)
 
 
+class RepresentationMode(str, Enum):
+    PER_ONE_PERCENT_MOVE = "PER_ONE_PERCENT_MOVE"
+    PER_ONE_DOLLAR_MOVE = "PER_ONE_DOLLAR_MOVE"
+    RAW = "RAW"
+
+
+class AggregationPeriod(str, Enum):
+    ONE_MINUTE = "ONE_MINUTE"
+    FIVE_MINUTE = "FIVE_MINUTE"
+    TEN_MINUTE = "TEN_MINUTE"
+    FIFTEEN_MINUTE = "FIFTEEN_MINUTE"
+    THIRTY_MINUTE = "THIRTY_MINUTE"
+    ONE_HOUR = "ONE_HOUR"
+
+
+class ContractTypeFilter(str, Enum):
+    CALL = "CALL"
+    PUT = "PUT"
+
+
 @dataclass(frozen=True)
 class ToolDefinition:
     """Template for a tool — no ID until setup creates it."""
