@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP
 
 from quantdata_mcp.client import QuantDataClient
 from quantdata_mcp.config import Config, config_exists, load_config
-from quantdata_mcp.tools import GreekMode, ToolSpec, build_tool_specs
+from quantdata_mcp.tools import GreekMode, MoneynessType, ToolSpec, TradeSideCodeType, build_tool_specs
 
 # ---------------------------------------------------------------------------
 # MCP Server + lazy-loaded config/client
@@ -128,6 +128,54 @@ def _restore_page_filter(changed: dict[str, str]) -> None:
     today = _today()
     if changed.get("date") != today or changed.get("ticker") != "SPX":
         _get_client().set_page_filter(_get_page_id(), session_date=today, ticker="SPX")
+
+
+def _apply_tool_filter(
+    tool_id: str,
+    moneyness: list[str] | None = None,
+    trade_side: list[str] | None = None,
+    strikes: list[int] | None = None,
+) -> dict[str, Any] | None:
+    """Apply tool-level filters (moneyness, trade side, strikes).
+
+    Returns the original filter dict for restore, or None if no filters were needed.
+    """
+    if not moneyness and not trade_side and not strikes:
+        return None
+
+    c = _get_client()
+    tool_dto = c.get_tool(tool_id)
+    if tool_dto is None:
+        raise RuntimeError(f"Failed to fetch tool {tool_id} for filtering")
+
+    original_filter = tool_dto.get("metadata", {}).get("filter", {})
+    new_filter = dict(original_filter)
+
+    if moneyness is not None:
+        new_filter["moneynessMoneyType"] = {
+            "filterOperationType": "EQUALS",
+            "value": moneyness,
+        }
+    if trade_side is not None:
+        new_filter["tradeSideCodeType"] = {
+            "filterOperationType": "EQUALS",
+            "value": trade_side,
+        }
+    if strikes is not None:
+        new_filter["strikePriceInCents"] = {
+            "filterOperationType": "EQUALS",
+            "value": strikes,
+        }
+
+    c.update_tool_metadata(tool_id, {"filter": new_filter})
+    return original_filter
+
+
+def _restore_tool_filter(tool_id: str, original_filter: dict[str, Any] | None) -> None:
+    """Restore tool filter to its original state. No-op if original_filter is None."""
+    if original_filter is None:
+        return
+    _get_client().update_tool_metadata(tool_id, {"filter": original_filter})
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +526,20 @@ class DataModeEnum(str, Enum):
     VOLUME = "VOLUME"
 
 
+class MoneynessEnum(str, Enum):
+    OTM = "OUT_OF_THE_MONEY"
+    ITM = "IN_THE_MONEY"
+    ATM = "AT_THE_MONEY"
+
+
+class TradeSideEnum(str, Enum):
+    AA = "AA"   # Above Ask (aggressive buy)
+    A = "A"     # At Ask
+    M = "M"     # Midpoint
+    B = "B"     # At Bid
+    BB = "BB"   # Below Bid (aggressive sell)
+
+
 @mcp.tool()
 def qd_get_exposure_by_strike(
     greek_type: GreekTypeEnum = GreekTypeEnum.GAMMA,
@@ -530,6 +592,8 @@ def qd_get_net_drift(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
+    moneyness: list[MoneynessEnum] | None = None,
+    strikes: list[float] | None = None,
     last_n: int = 10,
 ) -> str:
     """Get net drift data — cumulative call vs put premium flow.
@@ -541,13 +605,23 @@ def qd_get_net_drift(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine (e.g. ["OTM", "ATM"]). Default: all.
+        strikes: Filter to specific strike prices in dollars (e.g. [5600.0, 5700.0]). Default: all.
         last_n: Number of recent entries to show (default: 10)
     """
     try:
         c = _get_client()
         changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["net_drift"]
-        data = c.fetch_net_drift(tool.tool_id)
+        original_filter = _apply_tool_filter(
+            tool.tool_id,
+            moneyness=[m.value for m in moneyness] if moneyness else None,
+            strikes=[int(s * 100) for s in strikes] if strikes else None,
+        )
+        try:
+            data = c.fetch_net_drift(tool.tool_id)
+        finally:
+            _restore_tool_filter(tool.tool_id, original_filter)
         _restore_page_filter(changed)
         return _fmt_drift(data, last_n)
     except Exception as e:
@@ -560,6 +634,8 @@ def qd_get_trade_side_stats(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
+    moneyness: list[MoneynessEnum] | None = None,
+    strikes: list[float] | None = None,
 ) -> str:
     """Get contract side statistics — trade aggression breakdown.
 
@@ -571,6 +647,8 @@ def qd_get_trade_side_stats(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
+        strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
     """
     try:
         c = _get_client()
@@ -580,7 +658,15 @@ def qd_get_trade_side_stats(
         # Set data mode
         c.update_tool_metadata(tool.tool_id, {"dataModeType": data_mode.value})
 
-        data = c.fetch_trade_side_stats(tool.tool_id)
+        original_filter = _apply_tool_filter(
+            tool.tool_id,
+            moneyness=[m.value for m in moneyness] if moneyness else None,
+            strikes=[int(s * 100) for s in strikes] if strikes else None,
+        )
+        try:
+            data = c.fetch_trade_side_stats(tool.tool_id)
+        finally:
+            _restore_tool_filter(tool.tool_id, original_filter)
         _restore_page_filter(changed)
         return _fmt_trade_side_stats(data)
     except Exception as e:
@@ -645,6 +731,9 @@ def qd_get_net_flow(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
+    moneyness: list[MoneynessEnum] | None = None,
+    trade_side: list[TradeSideEnum] | None = None,
+    strikes: list[float] | None = None,
     last_n: int = 10,
 ) -> str:
     """Get net flow data — call/put premium flow over time.
@@ -655,13 +744,25 @@ def qd_get_net_flow(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
+        trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
+        strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
         last_n: Number of recent entries to show (default: 10)
     """
     try:
         c = _get_client()
         changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["net_flow"]
-        data = c.fetch_net_flow(tool.tool_id)
+        original_filter = _apply_tool_filter(
+            tool.tool_id,
+            moneyness=[m.value for m in moneyness] if moneyness else None,
+            trade_side=[t.value for t in trade_side] if trade_side else None,
+            strikes=[int(s * 100) for s in strikes] if strikes else None,
+        )
+        try:
+            data = c.fetch_net_flow(tool.tool_id)
+        finally:
+            _restore_tool_filter(tool.tool_id, original_filter)
         _restore_page_filter(changed)
         return _fmt_net_flow(data, last_n)
     except Exception as e:
@@ -701,6 +802,9 @@ def qd_get_contract_statistics(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
+    moneyness: list[MoneynessEnum] | None = None,
+    trade_side: list[TradeSideEnum] | None = None,
+    strikes: list[float] | None = None,
 ) -> str:
     """Get contract statistics — total premium, trade count, volume by call/put.
 
@@ -710,12 +814,24 @@ def qd_get_contract_statistics(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
+        trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
+        strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
     """
     try:
         c = _get_client()
         changed = _apply_page_filter(date, ticker, expiration_date)
         tool = _get_specs()["contract_statistics"]
-        data = c.fetch_contract_statistics(tool.tool_id)
+        original_filter = _apply_tool_filter(
+            tool.tool_id,
+            moneyness=[m.value for m in moneyness] if moneyness else None,
+            trade_side=[t.value for t in trade_side] if trade_side else None,
+            strikes=[int(s * 100) for s in strikes] if strikes else None,
+        )
+        try:
+            data = c.fetch_contract_statistics(tool.tool_id)
+        finally:
+            _restore_tool_filter(tool.tool_id, original_filter)
         _restore_page_filter(changed)
         return _fmt_contract_stats(data)
     except Exception as e:

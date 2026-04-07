@@ -33,6 +33,20 @@ class DataMode(str, Enum):
     VOLUME = "VOLUME"
 
 
+class MoneynessType(str, Enum):
+    OTM = "OUT_OF_THE_MONEY"
+    ITM = "IN_THE_MONEY"
+    ATM = "AT_THE_MONEY"
+
+
+class TradeSideCodeType(str, Enum):
+    AA = "AA"   # Above Ask (aggressive buy)
+    A = "A"     # At Ask
+    M = "M"     # Midpoint
+    B = "B"     # At Bid
+    BB = "BB"   # Below Bid (aggressive sell)
+
+
 @dataclass(frozen=True)
 class ToolDefinition:
     """Template for a tool — no ID until setup creates it."""
