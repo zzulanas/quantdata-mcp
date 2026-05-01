@@ -250,16 +250,27 @@ def _fmt_drift(data: dict[str, Any] | None, last_n: int = 10) -> str:
     if not drift_array:
         return "No net drift entries."
 
-    entries = drift_array[-last_n:]
+    # Filter to regular market session only (9:30 AM ET = 13:30 UTC).
+    # The API returns data from overnight/pre-market which skews the cumulative.
+    et = timezone(timedelta(hours=-4))  # EDT
+    today_utc = datetime.now(UTC).date()
+    market_open_ms = int(
+        datetime(today_utc.year, today_utc.month, today_utc.day, 13, 30, 0, tzinfo=UTC).timestamp() * 1000
+    )
+    session_entries = [t for t in drift_array if t[0] >= market_open_ms]
+    if not session_entries:
+        session_entries = drift_array  # fallback for historical dates
 
-    # Compute running totals
-    total_call = sum(t[1] for t in drift_array) / 100
-    total_put = sum(t[4] for t in drift_array) / 100
+    entries = session_entries[-last_n:]
+
+    # Compute running totals from session entries only
+    total_call = sum(t[1] for t in session_entries) / 100
+    total_put = sum(t[4] for t in session_entries) / 100
     total_net = total_call - total_put
     total_dir = "BULLISH" if total_net > 1000 else "BEARISH" if total_net < -1000 else "NEUTRAL"
 
-    lines = [f"Net Drift — Last {len(entries)} entries (of {len(drift_array)} total)", ""]
-    lines.append(f"{'Time':>12}  {'Call ($)':>12}  {'Put ($)':>12}  {'Net ($)':>12}  {'Price':>10}")
+    lines = [f"Net Drift — Last {len(entries)} entries (of {len(session_entries)} session)", ""]
+    lines.append(f"{'Time (ET)':>12}  {'Call ($)':>12}  {'Put ($)':>12}  {'Net ($)':>12}  {'Price':>10}")
     lines.append("-" * 66)
 
     for entry in entries:
@@ -269,9 +280,8 @@ def _fmt_drift(data: dict[str, Any] | None, last_n: int = 10) -> str:
         net = call_prem - put_prem
         spx = entry[7] / 100 if len(entry) > 7 else 0
 
-        # Convert epoch ms to time string
         try:
-            t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+            t = datetime.fromtimestamp(ts / 1000, tz=et).strftime("%H:%M:%S")
         except (OSError, ValueError):
             t = str(ts)
 
@@ -562,10 +572,11 @@ def _fmt_contract_price(data: dict[str, Any] | None) -> str:
 
     resp = data["response"]
 
-    # Try common response keys for OHLCV time series
-    price_data = resp.get("contractPriceOverTime", resp.get("priceOverTime", []))
+    price_data = resp.get(
+        "optionPriceOverTime",
+        resp.get("contractPriceOverTime", resp.get("priceOverTime", [])),
+    )
     if not price_data and isinstance(resp, dict):
-        # Fallback: look for any list-like data
         for key, val in resp.items():
             if isinstance(val, list) and val:
                 price_data = val
@@ -1193,11 +1204,12 @@ def qd_get_contract_price(
             "aggregationPeriodType": aggregation.value,
         })
 
-        # Set contract type and strike filters
         tool_dto = c.get_tool(tool.tool_id)
         original_filter: dict[str, Any] | None = None
         if tool_dto:
             original_filter = tool_dto.get("metadata", {}).get("filter", {})
+            session_date = date or _today()
+            exp = expiration_date or session_date
             new_filter = dict(original_filter) if original_filter else {}
             new_filter["contractType"] = {
                 "filterOperationType": "EQUALS",
@@ -1206,6 +1218,14 @@ def qd_get_contract_price(
             new_filter["strikePriceInCents"] = {
                 "filterOperationType": "EQUALS",
                 "value": int(strike * 100),
+            }
+            new_filter["expirationDate"] = {
+                "filterOperationType": "EQUALS",
+                "value": exp,
+            }
+            new_filter["ticker"] = {
+                "filterOperationType": "EQUALS",
+                "value": ticker,
             }
             c.update_tool_metadata(tool.tool_id, {"filter": new_filter})
 
