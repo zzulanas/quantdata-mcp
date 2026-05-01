@@ -1,5 +1,7 @@
 # QuantData MCP Server
 
+## THIS IS AN UNOFFICIAL MCP SERVER I AM NOT AFFILIATED WITH QUANTDATA IN ANY WAY
+
 MCP server that gives AI agents (Claude Code, Claude Desktop, etc.) access to real-time and historical options market data from [QuantData](https://quantdata.us).
 
 **Supports any optionable ticker** — SPX, SPY, QQQ, AAPL, TSLA, and more. Not just 0DTE.
