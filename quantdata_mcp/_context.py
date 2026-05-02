@@ -43,7 +43,11 @@ if TYPE_CHECKING:
 # both set the page (e.g. one to SPX, one to AAPL), the responses will
 # interleave and corrupt each other. FastMCP can dispatch tool calls
 # concurrently, so we serialize on the client side.
-_mutation_lock = threading.Lock()
+#
+# RLock so an outer ``page_filter_context`` can host inner ``tool_context``
+# calls (with ``skip_page_filter=True``) on the same thread without
+# deadlocking. Other threads still block as expected.
+_mutation_lock = threading.RLock()
 
 
 # Auth-error message shown to the LLM when the QuantData JWT has expired.
@@ -106,6 +110,7 @@ def tool_context(
     filter_updates: dict[str, dict[str, Any] | None] | None = None,
     time_minutes: int | None = None,
     needs_tool: bool = True,
+    skip_page_filter: bool = False,
     get_client: Any = None,
     get_specs: Any = None,
     get_page_id: Any = None,
@@ -114,22 +119,29 @@ def tool_context(
 
     On enter:
       1. Acquire the module-level mutation lock.
-      2. Set the page filter (date / ticker / expiration).
+      2. (Unless ``skip_page_filter``) set the page filter (date / ticker /
+         expiration).
       3. (If ``needs_tool``) GET the tool DTO once and snapshot its metadata.
-      4. Apply ``metadata_updates`` and ``filter_updates`` to the in-memory
-         DTO and PUT it back -- a single round trip instead of one PUT per
-         field group.
-      5. (If ``time_minutes`` is given) set the time scrubber.
+      4. Apply ``metadata_updates``, ``filter_updates``, and -- if
+         ``time_minutes`` is given -- ``numberOfMinutesIntoMarketOpen`` to
+         the in-memory DTO and PUT it back. ONE round trip total, even when
+         time scrubbing is in play.
 
     On exit:
-      1. (If ``time_minutes`` was set) reset the tool to live mode.
-      2. Restore the snapshotted metadata + filter via a single PUT, so any
-         user customizations in the QuantData UI are not clobbered.
-      3. Restore the page filter to today/SPX if it was changed.
-      4. Release the lock.
+      1. Restore the snapshotted metadata + filter via a single PUT, so any
+         user customizations in the QuantData UI are not clobbered. Because
+         ``numberOfMinutesIntoMarketOpen`` was added by the apply payload but
+         not present in the snapshot, the restore PUT also drops the time
+         scrubber back to live mode -- no extra GET/PUT needed.
+      2. (Unless ``skip_page_filter``) restore the page filter to today/SPX
+         if it was changed away from defaults.
+      3. Release the lock.
 
     Total network cost per call: 1 page-filter PUT + 1 tool GET + 2 tool PUTs
-    (vs. the old 1 page-filter PUT + 3 tool GETs + 3 tool PUTs).
+    (vs. the old 1 page-filter PUT + 3 tool GETs + 3 tool PUTs). The cost
+    holds even when ``time_minutes`` is set -- folding the time scrubber into
+    the existing apply/restore PUT pair avoids the extra GET+PUT that
+    ``client.set_tool_time`` / ``client.reset_to_live`` would do.
 
     Args:
         tool_name: Key in the spec registry (e.g. ``"net_drift"``).
@@ -142,10 +154,15 @@ def tool_context(
             Values that are ``None`` are skipped (so callers can pass a
             single dict literal with conditional entries).
         time_minutes: Minutes-from-midnight for time scrubbing. ``None`` =
-            live mode.
+            live mode. Folded into the apply PUT as
+            ``numberOfMinutesIntoMarketOpen``; restore PUT drops it.
         needs_tool: Set to ``False`` for tools that only need the page filter
             and no tool-level mutations (e.g. ``qd_get_max_pain``,
             ``qd_get_oi_by_strike``). Skips the GET + PUT pair entirely.
+        skip_page_filter: Set to ``True`` when an OUTER scope is already
+            managing the page filter (e.g. ``qd_get_market_snapshot`` wrapping
+            six fetches under a single page filter). Avoids redundant
+            page-filter PUTs.
         get_client / get_specs / get_page_id: Injected accessors. The server
             module passes its lazy-loading helpers; tests can pass mocks.
     """
@@ -166,21 +183,28 @@ def tool_context(
         client: QuantDataClient = get_client()
         spec = get_specs()[tool_name]
 
-        # 1. Page filter -- always set so the server-side state matches.
-        client.set_page_filter(
-            get_page_id(),
-            session_date=session_date,
-            ticker=ticker,
-            expiration_date=expiration_date,
-        )
+        # 1. Page filter -- skip when an outer scope owns it.
+        if not skip_page_filter:
+            client.set_page_filter(
+                get_page_id(),
+                session_date=session_date,
+                ticker=ticker,
+                expiration_date=expiration_date,
+            )
 
         snapshot_metadata: dict[str, Any] | None = None
         tool_dto: dict[str, Any] = {}
         # Keep the un-mutated DTO scaffold separately so the apply / restore
-        # PUTs each receive a FRESH dict. If we passed a single shared dict
-        # to ``json=``, the second PUT would mutate fields that the first
-        # PUT's recorded call still references -- making the apply payload
-        # appear identical to the restore payload after the fact.
+        # PUTs each receive a FRESH dict. NOTE: this is NOT needed for
+        # production correctness -- ``requests.put(json=dict)`` serializes the
+        # body synchronously inside the call, so mutating the source dict
+        # afterward has no effect on the already-sent request. The reason we
+        # keep separate dicts is purely to make the test suite's
+        # ``MagicMock.call_args_list`` assertions readable: that recorder
+        # stores REFERENCES to the dicts passed in, so two PUTs sharing one
+        # dict would each show the FINAL (post-mutation) state when inspected
+        # later. Splitting into a scaffold + per-PUT metadata dict keeps each
+        # recorded call payload independent.
         tool_dto_scaffold: dict[str, Any] = {}
 
         try:
@@ -194,6 +218,8 @@ def tool_context(
                 tool_dto = fetched
                 # Snapshot original metadata + filter (shallow copy of each --
                 # we never mutate values inside individual filter clauses).
+                # The snapshot is OPAQUE: any unknown / future top-level
+                # metadata keys round-trip unchanged through the restore PUT.
                 original_metadata = dict(tool_dto.get("metadata", {}))
                 original_filter = dict(original_metadata.get("filter", {}))
                 snapshot_metadata = dict(original_metadata)
@@ -215,6 +241,11 @@ def tool_context(
                         if v is None:
                             continue
                         new_metadata["filter"][k] = v
+                # Time scrubber rides along with the apply PUT. Because the
+                # snapshot was taken BEFORE this assignment, the restore PUT
+                # naturally drops the key back to live mode.
+                if time_minutes is not None:
+                    new_metadata["numberOfMinutesIntoMarketOpen"] = time_minutes
 
                 apply_payload = dict(tool_dto_scaffold)
                 apply_payload["metadata"] = new_metadata
@@ -222,9 +253,6 @@ def tool_context(
                     datetime.now(UTC).timestamp() * 1000
                 )
                 client._make_request("PUT", "tool", json=apply_payload, timeout=10)
-
-            if time_minutes is not None and needs_tool:
-                client.set_tool_time(spec.tool_id, time_minutes)
 
             yield ToolContext(
                 client=client,
@@ -235,14 +263,8 @@ def tool_context(
                 expiration_date=expiration_date,
             )
         finally:
-            # 4. Time scrub reset (if used).
-            if time_minutes is not None and needs_tool:
-                try:
-                    client.reset_to_live(spec.tool_id)
-                except Exception:  # pragma: no cover - best effort
-                    pass
-
-            # 5. Restore snapshotted metadata via a single PUT (fresh payload).
+            # 4. Restore snapshotted metadata via a single PUT (fresh payload).
+            # This also drops ``numberOfMinutesIntoMarketOpen`` if we set it.
             if needs_tool and snapshot_metadata is not None:
                 try:
                     restore_payload = dict(tool_dto_scaffold)
@@ -256,7 +278,59 @@ def tool_context(
                 except Exception:  # pragma: no cover - best effort
                     pass
 
-            # 6. Restore page filter to today/SPX if we changed away from defaults.
+            # 5. Restore page filter to today/SPX if we changed away from
+            # defaults (and we own the page filter for this scope).
+            if not skip_page_filter:
+                today = _today()
+                if session_date != today or ticker != "SPX":
+                    try:
+                        client.set_page_filter(
+                            get_page_id(), session_date=today, ticker="SPX"
+                        )
+                    except Exception:  # pragma: no cover - best effort
+                        pass
+
+
+@contextmanager
+def page_filter_context(
+    *,
+    ticker: str = "SPX",
+    date: str | None = None,
+    expiration_date: str | None = None,
+    get_client: Any = None,
+    get_page_id: Any = None,
+) -> Iterator[None]:
+    """Apply + restore the page filter ONCE around a block of inner fetches.
+
+    Use this to wrap a batch of ``tool_context(..., skip_page_filter=True)``
+    calls so the page-filter PUT happens exactly twice (apply + restore)
+    instead of once per inner call. ``qd_get_market_snapshot`` uses this to
+    keep its 6 section fetches under one shared page filter.
+
+    Acquires the same module-level mutation lock as ``tool_context`` so the
+    apply + entire batch + restore is atomic relative to other tool calls.
+    """
+    if get_client is None or get_page_id is None:
+        from quantdata_mcp import server as _srv
+
+        if get_client is None:
+            get_client = _srv._get_client
+        if get_page_id is None:
+            get_page_id = _srv._get_page_id
+
+    session_date = date or _today()
+
+    with _mutation_lock:
+        client: QuantDataClient = get_client()
+        client.set_page_filter(
+            get_page_id(),
+            session_date=session_date,
+            ticker=ticker,
+            expiration_date=expiration_date,
+        )
+        try:
+            yield
+        finally:
             today = _today()
             if session_date != today or ticker != "SPX":
                 try:

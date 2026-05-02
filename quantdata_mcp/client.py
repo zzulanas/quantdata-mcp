@@ -294,6 +294,12 @@ class QuantDataClient:
                 f"Page filter set: page={page_id[:8]}... date={session_date} ticker={ticker}"
             )
             return True
+        except (QuantDataAuthError, QuantDataRateLimitError):
+            # Auth + rate-limit errors must propagate so callers can show the
+            # friendly "re-run setup" / "rate limited" message. Without this,
+            # tools whose ONLY API call is set_page_filter (e.g. qd_set_page_date)
+            # would mask a 401/429 as a generic "Failed to set page filter."
+            raise
         except Exception as e:
             logger.error(f"Failed to set page filter: {e}")
             return False
