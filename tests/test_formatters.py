@@ -36,7 +36,8 @@ class TestFmtNetFlow:
         # First fixture row: [1777608000000, 110000, 356000, 720901]
         # call_cents=110000 -> $1,100; put_cents=356000 -> $3,560; net=-$2,460
         out = _fmt_net_flow(net_flow_response)
-        assert "04:00:00" in out  # 1777608000000ms = 2026-05-01 04:00:00 UTC
+        # 1777608000000ms = 2026-05-01 04:00:00 UTC = 00:00:00 EDT
+        assert "00:00:00" in out
         assert "+1,100" in out
         assert "+3,560" in out
         assert "-2,460" in out
@@ -45,16 +46,16 @@ class TestFmtNetFlow:
         out = _fmt_net_flow(net_flow_response, last_n=2)
         # Should show only the last 2 rows
         assert "Last 2 entries" in out
-        assert "04:03:00" in out
-        assert "04:04:00" in out
-        assert "04:00:00" not in out
+        # ET timestamps: rows at UTC 04:03, 04:04 -> ET 00:03, 00:04
+        assert "00:03:00" in out
+        assert "00:04:00" in out
+        assert "00:00:00" not in out
 
     @pytest.mark.parametrize(
         "data",
         [
             None,
             {},
-            {"response": {}},
             {"response": {"netFlow": []}},
         ],
     )
@@ -62,6 +63,15 @@ class TestFmtNetFlow:
         out = _fmt_net_flow(data)
         assert isinstance(out, str)
         assert "No net flow" in out
+
+    def test_missing_key_returns_diagnostic(self) -> None:
+        """When the expected `netFlow` key is absent (vs. present-but-empty),
+        the output should include a diagnostic listing what keys *were* there."""
+        data = {"response": {"someOtherKey": [1, 2, 3], "x": 1}}
+        out = _fmt_net_flow(data)
+        assert "unexpected response shape" in out
+        assert "Available keys" in out
+        assert "someOtherKey" in out
 
     def test_skips_malformed_rows(self) -> None:
         """A row that isn't a 4-item list must not crash; it should be skipped."""
@@ -76,9 +86,27 @@ class TestFmtNetFlow:
             }
         }
         out = _fmt_net_flow(data)
-        # Both well-formed rows should appear; nothing should crash
-        assert "04:00:00" in out
-        assert "04:01:00" in out
+        # Both well-formed rows should appear (in ET); nothing should crash
+        assert "00:00:00" in out
+        assert "00:01:00" in out
+
+    def test_header_count_matches_rendered_rows(self) -> None:
+        """If 4 rows are passed but 1 is malformed, the header should say
+        'Last 3 entries' (not 'Last 4 entries')."""
+        data = {
+            "response": {
+                "netFlow": [
+                    [1777608000000, 100, 200, 720000],  # ok
+                    "garbage",                            # skipped
+                    [1777608060000, 50, 75, 720000],     # ok
+                    [1777608120000, 10, 20, 720000],     # ok
+                ]
+            }
+        }
+        out = _fmt_net_flow(data)
+        assert "Last 3 entries" in out
+        # And exactly 3 data lines (containing the time pattern "00:")
+        assert sum(1 for line in out.splitlines() if "Call:" in line) == 3
 
     def test_does_not_treat_8_item_rows_as_drift(self) -> None:
         """The 8-item branch was a PR #1 mistake — net-flow only ever returns
@@ -108,17 +136,17 @@ class TestFmtContractPrice:
     ) -> None:
         out = _fmt_contract_price(contract_price_response)
         assert out.startswith("Contract Price (OHLCV)")
-        assert "Time" in out and "Open" in out and "Close" in out and "Volume" in out
+        assert "Time (ET)" in out and "Open" in out and "Close" in out and "Volume" in out
 
     def test_first_entry_values(
         self, contract_price_response: dict[str, Any]
     ) -> None:
         # First fixture row:
         #   [1777611180000, 3700, 3700, 3700, 3700, 2, ...]
-        #   1777611180000ms = 2026-05-01 04:53:00 UTC
+        #   1777611180000ms = 2026-05-01 04:53:00 UTC = 00:53:00 EDT
         #   3700 cents -> $37.00, volume 2
         out = _fmt_contract_price(contract_price_response)
-        assert "04:53:00" in out
+        assert "00:53:00" in out
         assert "$    37.00" in out
 
     def test_known_close_price(
@@ -133,7 +161,6 @@ class TestFmtContractPrice:
         [
             None,
             {},
-            {"response": {}},
             {"response": {"optionPriceOverTime": []}},
         ],
     )
@@ -141,6 +168,15 @@ class TestFmtContractPrice:
         out = _fmt_contract_price(data)
         assert isinstance(out, str)
         assert "No contract price" in out
+
+    def test_missing_key_returns_diagnostic(self) -> None:
+        """When the expected `optionPriceOverTime` key is absent, surface a
+        diagnostic listing the keys we *did* see."""
+        data = {"response": {"someUnexpectedKey": "x", "another": 1}}
+        out = _fmt_contract_price(data)
+        assert "unexpected response shape" in out
+        assert "Available keys" in out
+        assert "someUnexpectedKey" in out
 
     def test_skips_malformed_rows(self) -> None:
         """Rows shorter than the OHLCV shape are skipped, not crashed on."""
@@ -179,12 +215,13 @@ class TestFmtOrderFlow:
         out = _fmt_order_flow(order_flow_response)
         assert "Order Flow" in out
         assert "Ticker" in out and "Strike" in out and "Sentiment" in out
+        assert "Time (ET)" in out
 
     def test_known_trade_fields(
         self, order_flow_response: dict[str, Any]
     ) -> None:
         # First fixture trade:
-        #   tradeTime=1777665597865ms -> 19:59:57 UTC
+        #   tradeTime=1777665597865ms -> 19:59:57 UTC -> 15:59:57 EDT
         #   strikePriceInCents=723500 -> $7,235
         #   contractType=PUT -> "P"
         #   tradeSideCode="B"
@@ -192,7 +229,7 @@ class TestFmtOrderFlow:
         #   size=118
         #   sentimentType=BULLISH
         out = _fmt_order_flow(order_flow_response)
-        assert "19:59:57" in out
+        assert "15:59:57" in out
         assert "$   7,235" in out
         assert "BULLISH" in out
         assert "$    62,340" in out
@@ -223,7 +260,6 @@ class TestFmtOrderFlow:
         [
             None,
             {},
-            {"response": {}},
             {"response": {"trades": []}},
         ],
     )
@@ -231,6 +267,16 @@ class TestFmtOrderFlow:
         out = _fmt_order_flow(data)
         assert isinstance(out, str)
         assert "No order flow" in out
+
+    def test_missing_key_returns_diagnostic(self) -> None:
+        """When the expected `trades` key is missing entirely (vs. an empty
+        list), output a diagnostic so we can debug an API drift."""
+        data = {"response": {"statistics": {"x": 1}, "otherKey": [1, 2]}}
+        out = _fmt_order_flow(data)
+        assert "unexpected response shape" in out
+        assert "Available keys" in out
+        assert "statistics" in out
+        assert "otherKey" in out
 
     def test_handles_missing_optional_fields(self) -> None:
         """Trades missing optional fields should still render with safe defaults."""
@@ -253,3 +299,71 @@ class TestFmtOrderFlow:
         assert "$       0" in out  # missing premium -> $0
         assert "5" in out
         # No exception, no crash
+
+    def test_null_strike_price_in_cents_does_not_crash(self) -> None:
+        """If the API ever sends explicit null for strikePriceInCents, the
+        formatter must not raise TypeError on `None / 100`. Same for
+        premiumInCents and any other *InCents field that goes through `/100`.
+        """
+        data = {
+            "response": {
+                "trades": [
+                    {
+                        "tradeTime": 1777665597000,
+                        "ticker": "SPX",
+                        "strikePriceInCents": None,   # explicit null
+                        "premiumInCents": None,       # explicit null
+                        "contractType": "PUT",
+                        "tradeSideCode": "A",
+                        "size": 1,
+                        "sentimentType": "BULLISH",
+                    }
+                ]
+            }
+        }
+        # Must not raise
+        out = _fmt_order_flow(data)
+        assert "SPX" in out
+        # null strike rendered as $0
+        assert "$       0" in out
+
+    def test_header_count_matches_rendered_rows(self) -> None:
+        """If a malformed (non-dict) trade is in the list, the header should
+        report the count of *rendered* trades, not the raw input count."""
+        data = {
+            "response": {
+                "trades": [
+                    {
+                        "tradeTime": 1777665597000,
+                        "ticker": "SPX",
+                        "strikePriceInCents": 700000,
+                        "contractType": "CALL",
+                        "tradeSideCode": "A",
+                        "premiumInCents": 100000,
+                        "size": 1,
+                        "sentimentType": "BULLISH",
+                    },
+                    "not a dict — should be skipped",
+                    {
+                        "tradeTime": 1777665598000,
+                        "ticker": "SPX",
+                        "strikePriceInCents": 700000,
+                        "contractType": "PUT",
+                        "tradeSideCode": "B",
+                        "premiumInCents": 200000,
+                        "size": 2,
+                        "sentimentType": "BEARISH",
+                    },
+                ]
+            }
+        }
+        out = _fmt_order_flow(data)
+        # 3 input trades, 1 malformed -> 2 rendered
+        assert "Last 2 entries" in out
+        # Row count: lines containing "SPX" data (not the header lines)
+        data_rows = [
+            line for line in out.splitlines()
+            if line.strip().startswith(("15:", "16:", "17:")) and "SPX" in line
+        ]
+        # All rendered data rows match the count in the header
+        assert len(data_rows) == 2
