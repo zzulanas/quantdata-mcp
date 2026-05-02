@@ -12,15 +12,30 @@ Usage:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from enum import Enum
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from mcp.server.fastmcp import FastMCP
 
-from quantdata_mcp.client import QuantDataClient
+from quantdata_mcp._context import (
+    AUTH_ERROR_MESSAGE,
+    _eq,
+    format_error,
+    tool_context,
+)
+from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
 from quantdata_mcp.config import Config, config_exists, load_config
-from quantdata_mcp.tools import GreekMode, MoneynessType, ToolSpec, TradeSideCodeType, build_tool_specs
+from quantdata_mcp.tools import (
+    AggregationPeriod,
+    ContractTypeFilter,
+    DataMode,
+    GreekMode,
+    MoneynessType,
+    RepresentationMode,
+    ToolSpec,
+    TradeSideCodeType,
+    build_tool_specs,
+)
 
 # ---------------------------------------------------------------------------
 # MCP Server + lazy-loaded config/client
@@ -107,78 +122,6 @@ def _today() -> str:
     """Return today's date in YYYY-MM-DD (Eastern Time, since market data is keyed by ET)."""
     et = ZoneInfo("America/New_York")
     return datetime.now(et).strftime("%Y-%m-%d")
-
-
-def _apply_page_filter(
-    date: str | None = None,
-    ticker: str = "SPX",
-    expiration_date: str | None = None,
-) -> dict[str, str]:
-    """Set page filter. Always sets it to ensure correct ticker/date. Returns what was set."""
-    c = _get_client()
-    session_date = date or _today()
-    c.set_page_filter(
-        _get_page_id(),
-        session_date=session_date,
-        ticker=ticker,
-        expiration_date=expiration_date,
-    )
-    return {"date": session_date, "ticker": ticker}
-
-
-def _restore_page_filter(changed: dict[str, str]) -> None:
-    """Restore page filter to today/SPX if we changed away from defaults."""
-    today = _today()
-    if changed.get("date") != today or changed.get("ticker") != "SPX":
-        _get_client().set_page_filter(_get_page_id(), session_date=today, ticker="SPX")
-
-
-def _apply_tool_filter(
-    tool_id: str,
-    moneyness: list[str] | None = None,
-    trade_side: list[str] | None = None,
-    strikes: list[int] | None = None,
-) -> dict[str, Any] | None:
-    """Apply tool-level filters (moneyness, trade side, strikes).
-
-    Returns the original filter dict for restore, or None if no filters were needed.
-    """
-    if not moneyness and not trade_side and not strikes:
-        return None
-
-    c = _get_client()
-    tool_dto = c.get_tool(tool_id)
-    if tool_dto is None:
-        raise RuntimeError(f"Failed to fetch tool {tool_id} for filtering")
-
-    original_filter = tool_dto.get("metadata", {}).get("filter", {})
-    new_filter = dict(original_filter)
-
-    if moneyness is not None:
-        new_filter["moneynessMoneyType"] = {
-            "filterOperationType": "EQUALS",
-            "value": moneyness,
-        }
-    if trade_side is not None:
-        new_filter["tradeSideCodeType"] = {
-            "filterOperationType": "EQUALS",
-            "value": trade_side,
-        }
-    if strikes is not None:
-        new_filter["strikePriceInCents"] = {
-            "filterOperationType": "EQUALS",
-            "value": strikes,
-        }
-
-    c.update_tool_metadata(tool_id, {"filter": new_filter})
-    return original_filter
-
-
-def _restore_tool_filter(tool_id: str, original_filter: dict[str, Any] | None) -> None:
-    """Restore tool filter to its original state. No-op if original_filter is None."""
-    if original_filter is None:
-        return
-    _get_client().update_tool_metadata(tool_id, {"filter": original_filter})
 
 
 # ---------------------------------------------------------------------------
@@ -704,61 +647,14 @@ def _fmt_order_flow(data: dict[str, Any] | None, last_n: int = 20) -> str:
 # ---------------------------------------------------------------------------
 
 
-class GreekTypeEnum(str, Enum):
-    GAMMA = "GAMMA"
-    DELTA = "DELTA"
-    CHARM = "CHARM"
-    VANNA = "VANNA"
-
-
-class DataModeEnum(str, Enum):
-    PREMIUM = "PREMIUM"
-    TRADE_COUNT = "TRADE_COUNT"
-    VOLUME = "VOLUME"
-
-
-class MoneynessEnum(str, Enum):
-    OTM = "OUT_OF_THE_MONEY"
-    ITM = "IN_THE_MONEY"
-    ATM = "AT_THE_MONEY"
-
-
-class TradeSideEnum(str, Enum):
-    AA = "AA"   # Above Ask (aggressive buy)
-    A = "A"     # At Ask
-    M = "M"     # Midpoint
-    B = "B"     # At Bid
-    BB = "BB"   # Below Bid (aggressive sell)
-
-
-class RepresentationModeEnum(str, Enum):
-    PER_1PCT = "PER_ONE_PERCENT_MOVE"   # Exposure per 1% move (default)
-    PER_1USD = "PER_ONE_DOLLAR_MOVE"    # Exposure per $1 move
-    RAW = "RAW"                          # Raw exposure values
-
-
-class AggregationEnum(str, Enum):
-    ONE_MIN = "ONE_MINUTE"
-    FIVE_MIN = "FIVE_MINUTE"
-    TEN_MIN = "TEN_MINUTE"
-    FIFTEEN_MIN = "FIFTEEN_MINUTE"
-    THIRTY_MIN = "THIRTY_MINUTE"
-    ONE_HOUR = "ONE_HOUR"
-
-
-class ContractTypeEnum(str, Enum):
-    CALL = "CALL"
-    PUT = "PUT"
-
-
 @mcp.tool()
 def qd_get_exposure_by_strike(
-    greek_type: GreekTypeEnum = GreekTypeEnum.GAMMA,
+    greek_type: GreekMode = GreekMode.GAMMA,
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
     time_minutes: int | None = None,
-    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_1PCT,
+    representation_mode: RepresentationMode = RepresentationMode.PER_ONE_PERCENT_MOVE,
     is_net: bool = True,
 ) -> str:
     """Get GEX/DEX/CEX/VEX wall data — top exposure levels by strike price.
@@ -776,37 +672,24 @@ def qd_get_exposure_by_strike(
         is_net: True for net (call+put combined), False for gross (separate). Default: True.
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["exposure_by_strike"]
-
-        # Set greek mode, representation mode, and net/gross
-        greek_mode = GreekMode(greek_type.value)
-        c.update_tool_metadata(tool.tool_id, {
-            "greekModeType": greek_mode.value,
-            "representationModeType": representation_mode.value,
-            "isNet": is_net,
-        })
-
-        if time_minutes is not None:
-            c.set_tool_time(tool.tool_id, time_minutes)
-
-        try:
-            data = c.fetch_strike_data(tool.tool_id)
-        finally:
-            if time_minutes is not None:
-                c.reset_to_live(tool.tool_id)
-            # Restore defaults
-            c.update_tool_metadata(tool.tool_id, {
-                "greekModeType": "GAMMA",
-                "representationModeType": "PER_ONE_PERCENT_MOVE",
-                "isNet": True,
-            })
-
-        _restore_page_filter(changed)
+        with tool_context(
+            "exposure_by_strike",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={
+                "greekModeType": greek_type.value,
+                "representationModeType": representation_mode.value,
+                "isNet": is_net,
+            },
+            time_minutes=time_minutes,
+        ) as ctx:
+            data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
         return _fmt_walls(data, greek_type.value, ticker=ticker)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching {greek_type.value} walls: {e}"
+        return format_error(f"{greek_type.value} walls", e)
 
 
 @mcp.tool()
@@ -814,9 +697,9 @@ def qd_get_net_drift(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    moneyness: list[MoneynessEnum] | None = None,
+    moneyness: list[MoneynessType] | None = None,
     strikes: list[float] | None = None,
-    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
+    aggregation: AggregationPeriod = AggregationPeriod.ONE_MINUTE,
     last_n: int = 10,
 ) -> str:
     """Get net drift data — cumulative call vs put premium flow.
@@ -834,35 +717,32 @@ def qd_get_net_drift(
         last_n: Number of recent entries to show (default: 10)
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["net_drift"]
-
-        c.update_tool_metadata(tool.tool_id, {"aggregationPeriodType": aggregation.value})
-
-        original_filter = _apply_tool_filter(
-            tool.tool_id,
-            moneyness=[m.value for m in moneyness] if moneyness else None,
-            strikes=[int(s * 100) for s in strikes] if strikes else None,
-        )
-        try:
-            data = c.fetch_net_drift(tool.tool_id)
-        finally:
-            _restore_tool_filter(tool.tool_id, original_filter)
-            c.update_tool_metadata(tool.tool_id, {"aggregationPeriodType": "ONE_MINUTE"})
-        _restore_page_filter(changed)
+        with tool_context(
+            "net_drift",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={"aggregationPeriodType": aggregation.value},
+            filter_updates={
+                "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
+                "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_net_drift(ctx.tool_spec.tool_id)
         return _fmt_drift(data, last_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching net drift: {e}"
+        return format_error("net drift", e)
 
 
 @mcp.tool()
 def qd_get_trade_side_stats(
-    data_mode: DataModeEnum = DataModeEnum.PREMIUM,
+    data_mode: DataMode = DataMode.PREMIUM,
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    moneyness: list[MoneynessEnum] | None = None,
+    moneyness: list[MoneynessType] | None = None,
     strikes: list[float] | None = None,
 ) -> str:
     """Get contract side statistics — trade aggression breakdown.
@@ -879,26 +759,23 @@ def qd_get_trade_side_stats(
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["contract_side_stats"]
-
-        # Set data mode
-        c.update_tool_metadata(tool.tool_id, {"dataModeType": data_mode.value})
-
-        original_filter = _apply_tool_filter(
-            tool.tool_id,
-            moneyness=[m.value for m in moneyness] if moneyness else None,
-            strikes=[int(s * 100) for s in strikes] if strikes else None,
-        )
-        try:
-            data = c.fetch_trade_side_stats(tool.tool_id)
-        finally:
-            _restore_tool_filter(tool.tool_id, original_filter)
-        _restore_page_filter(changed)
+        with tool_context(
+            "contract_side_stats",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={"dataModeType": data_mode.value},
+            filter_updates={
+                "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
+                "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_trade_side_stats(ctx.tool_spec.tool_id)
         return _fmt_trade_side_stats(data)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching trade side stats: {e}"
+        return format_error("trade side stats", e)
 
 
 @mcp.tool()
@@ -917,14 +794,19 @@ def qd_get_max_pain(
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["max_pain"]
-        data = c.fetch_max_pain(tool.tool_id)
-        _restore_page_filter(changed)
+        with tool_context(
+            "max_pain",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            needs_tool=False,
+        ) as ctx:
+            data = ctx.client.fetch_max_pain(ctx.tool_spec.tool_id)
         return _fmt_max_pain(data)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching max pain: {e}"
+        return format_error("max pain", e)
 
 
 @mcp.tool()
@@ -934,7 +816,7 @@ def qd_get_iv_rank(
     expiration_date: str | None = None,
     lookback_period: int = 365,
     maturity: int = 30,
-    contract_type: list[ContractTypeEnum] | None = None,
+    contract_type: list[ContractTypeFilter] | None = None,
 ) -> str:
     """Get IV rank — where current implied volatility sits in its historical range.
 
@@ -950,43 +832,27 @@ def qd_get_iv_rank(
         contract_type: Filter to CALL, PUT, or both. Default: both (None).
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["iv_rank"]
-
-        c.update_tool_metadata(tool.tool_id, {
-            "lookBackPeriod": lookback_period,
-            "maturity": maturity,
-        })
-
-        # Apply contract type filter if specified
-        original_filter: dict[str, Any] | None = None
-        if contract_type:
-            tool_dto = c.get_tool(tool.tool_id)
-            if tool_dto:
-                original_filter = tool_dto.get("metadata", {}).get("filter", {})
-                new_filter = dict(original_filter) if original_filter else {}
-                new_filter["contractType"] = {
-                    "filterOperationType": "EQUALS",
-                    "value": [ct.value for ct in contract_type],
-                }
-                c.update_tool_metadata(tool.tool_id, {"filter": new_filter})
-
-        try:
-            data = c.fetch_iv_rank(tool.tool_id)
-        finally:
-            # Restore defaults
-            c.update_tool_metadata(tool.tool_id, {
-                "lookBackPeriod": 365,
-                "maturity": 30,
-            })
-            if original_filter is not None:
-                c.update_tool_metadata(tool.tool_id, {"filter": original_filter})
-
-        _restore_page_filter(changed)
+        with tool_context(
+            "iv_rank",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={
+                "lookBackPeriod": lookback_period,
+                "maturity": maturity,
+            },
+            filter_updates={
+                "contractType": _eq([ct.value for ct in contract_type])
+                if contract_type
+                else None,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_iv_rank(ctx.tool_spec.tool_id)
         return _fmt_iv_rank(data, date)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching IV rank: {e}"
+        return format_error("IV rank", e)
 
 
 @mcp.tool()
@@ -994,11 +860,11 @@ def qd_get_net_flow(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    moneyness: list[MoneynessEnum] | None = None,
-    trade_side: list[TradeSideEnum] | None = None,
+    moneyness: list[MoneynessType] | None = None,
+    trade_side: list[TradeSideCodeType] | None = None,
     strikes: list[float] | None = None,
-    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
-    data_mode: DataModeEnum = DataModeEnum.PREMIUM,
+    aggregation: AggregationPeriod = AggregationPeriod.ONE_MINUTE,
+    data_mode: DataMode = DataMode.PREMIUM,
     last_n: int = 10,
 ) -> str:
     """Get net flow data — call/put premium flow over time.
@@ -1017,33 +883,27 @@ def qd_get_net_flow(
         last_n: Number of recent entries to show (default: 10)
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["net_flow"]
-
-        c.update_tool_metadata(tool.tool_id, {
-            "aggregationPeriodType": aggregation.value,
-            "dataModeType": data_mode.value,
-        })
-
-        original_filter = _apply_tool_filter(
-            tool.tool_id,
-            moneyness=[m.value for m in moneyness] if moneyness else None,
-            trade_side=[t.value for t in trade_side] if trade_side else None,
-            strikes=[int(s * 100) for s in strikes] if strikes else None,
-        )
-        try:
-            data = c.fetch_net_flow(tool.tool_id)
-        finally:
-            _restore_tool_filter(tool.tool_id, original_filter)
-            c.update_tool_metadata(tool.tool_id, {
-                "aggregationPeriodType": "ONE_MINUTE",
-                "dataModeType": "PREMIUM",
-            })
-        _restore_page_filter(changed)
+        with tool_context(
+            "net_flow",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={
+                "aggregationPeriodType": aggregation.value,
+                "dataModeType": data_mode.value,
+            },
+            filter_updates={
+                "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
+                "tradeSideCodeType": _eq([t.value for t in trade_side]) if trade_side else None,
+                "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_net_flow(ctx.tool_spec.tool_id)
         return _fmt_net_flow(data, last_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching net flow: {e}"
+        return format_error("net flow", e)
 
 
 @mcp.tool()
@@ -1064,14 +924,19 @@ def qd_get_oi_by_strike(
         near_strike: Filter to strikes within $50 of this price
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["oi_by_strike"]
-        data = c.fetch_oi_by_strike(tool.tool_id)
-        _restore_page_filter(changed)
+        with tool_context(
+            "oi_by_strike",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            needs_tool=False,
+        ) as ctx:
+            data = ctx.client.fetch_oi_by_strike(ctx.tool_spec.tool_id)
         return _fmt_oi_by_strike(data, near_strike, ticker=ticker)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching OI by strike: {e}"
+        return format_error("OI by strike", e)
 
 
 @mcp.tool()
@@ -1079,8 +944,8 @@ def qd_get_contract_statistics(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    moneyness: list[MoneynessEnum] | None = None,
-    trade_side: list[TradeSideEnum] | None = None,
+    moneyness: list[MoneynessType] | None = None,
+    trade_side: list[TradeSideCodeType] | None = None,
     strikes: list[float] | None = None,
 ) -> str:
     """Get contract statistics — total premium, trade count, volume by call/put.
@@ -1096,32 +961,32 @@ def qd_get_contract_statistics(
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["contract_statistics"]
-        original_filter = _apply_tool_filter(
-            tool.tool_id,
-            moneyness=[m.value for m in moneyness] if moneyness else None,
-            trade_side=[t.value for t in trade_side] if trade_side else None,
-            strikes=[int(s * 100) for s in strikes] if strikes else None,
-        )
-        try:
-            data = c.fetch_contract_statistics(tool.tool_id)
-        finally:
-            _restore_tool_filter(tool.tool_id, original_filter)
-        _restore_page_filter(changed)
+        with tool_context(
+            "contract_statistics",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            filter_updates={
+                "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
+                "tradeSideCodeType": _eq([t.value for t in trade_side]) if trade_side else None,
+                "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_contract_statistics(ctx.tool_spec.tool_id)
         return _fmt_contract_stats(data)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching contract statistics: {e}"
+        return format_error("contract statistics", e)
 
 
 @mcp.tool()
 def qd_get_exposure_by_expiration(
-    greek_type: GreekTypeEnum = GreekTypeEnum.GAMMA,
+    greek_type: GreekMode = GreekMode.GAMMA,
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_1PCT,
+    representation_mode: RepresentationMode = RepresentationMode.PER_ONE_PERCENT_MOVE,
     is_net: bool = True,
     strikes: list[float] | None = None,
 ) -> str:
@@ -1140,45 +1005,36 @@ def qd_get_exposure_by_expiration(
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0, 5700.0]). Default: all.
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["exposure_by_expiration"]
-
-        greek_mode = GreekMode(greek_type.value)
-        c.update_tool_metadata(tool.tool_id, {
-            "greekModeType": greek_mode.value,
-            "representationModeType": representation_mode.value,
-            "isNet": is_net,
-        })
-
-        original_filter = _apply_tool_filter(
-            tool.tool_id,
-            strikes=[int(s * 100) for s in strikes] if strikes else None,
-        )
-        try:
-            data = c.fetch_exposure_by_expiration(tool.tool_id)
-        finally:
-            _restore_tool_filter(tool.tool_id, original_filter)
-            c.update_tool_metadata(tool.tool_id, {
-                "greekModeType": "GAMMA",
-                "representationModeType": "PER_ONE_PERCENT_MOVE",
-                "isNet": True,
-            })
-
-        _restore_page_filter(changed)
+        with tool_context(
+            "exposure_by_expiration",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={
+                "greekModeType": greek_type.value,
+                "representationModeType": representation_mode.value,
+                "isNet": is_net,
+            },
+            filter_updates={
+                "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_exposure_by_expiration(ctx.tool_spec.tool_id)
         return _fmt_exposure_by_expiration(data, greek_type.value, ticker=ticker)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching exposure by expiration: {e}"
+        return format_error("exposure by expiration", e)
 
 
 @mcp.tool()
 def qd_get_contract_price(
     strike: float,
-    contract_type: ContractTypeEnum = ContractTypeEnum.CALL,
+    contract_type: ContractTypeFilter = ContractTypeFilter.CALL,
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
+    aggregation: AggregationPeriod = AggregationPeriod.ONE_MINUTE,
 ) -> str:
     """Get OHLCV price data for a specific options contract.
 
@@ -1192,53 +1048,28 @@ def qd_get_contract_price(
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE)
         aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
     """
+    session_date = date or _today()
+    exp = expiration_date or session_date
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["contract_price_time"]
-
-        c.update_tool_metadata(tool.tool_id, {
-            "aggregationPeriodType": aggregation.value,
-        })
-
-        tool_dto = c.get_tool(tool.tool_id)
-        original_filter: dict[str, Any] | None = None
-        if tool_dto:
-            original_filter = tool_dto.get("metadata", {}).get("filter", {})
-            session_date = date or _today()
-            exp = expiration_date or session_date
-            new_filter = dict(original_filter) if original_filter else {}
-            new_filter["contractType"] = {
-                "filterOperationType": "EQUALS",
-                "value": contract_type.value,
-            }
-            new_filter["strikePriceInCents"] = {
-                "filterOperationType": "EQUALS",
-                "value": int(strike * 100),
-            }
-            new_filter["expirationDate"] = {
-                "filterOperationType": "EQUALS",
-                "value": exp,
-            }
-            new_filter["ticker"] = {
-                "filterOperationType": "EQUALS",
-                "value": ticker,
-            }
-            c.update_tool_metadata(tool.tool_id, {"filter": new_filter})
-
-        try:
-            data = c.fetch_contract_price_time(tool.tool_id)
-        finally:
-            c.update_tool_metadata(tool.tool_id, {
-                "aggregationPeriodType": "ONE_MINUTE",
-            })
-            if original_filter is not None:
-                c.update_tool_metadata(tool.tool_id, {"filter": original_filter})
-
-        _restore_page_filter(changed)
+        with tool_context(
+            "contract_price_time",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={"aggregationPeriodType": aggregation.value},
+            filter_updates={
+                "contractType": _eq(contract_type.value),
+                "strikePriceInCents": _eq(int(strike * 100)),
+                "expirationDate": _eq(exp),
+                "ticker": _eq(ticker),
+            },
+        ) as ctx:
+            data = ctx.client.fetch_contract_price_time(ctx.tool_spec.tool_id)
         return _fmt_contract_price(data)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching contract price: {e}"
+        return format_error("contract price", e)
 
 
 @mcp.tool()
@@ -1246,9 +1077,9 @@ def qd_get_order_flow(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    contract_type: ContractTypeEnum | None = None,
-    moneyness: list[MoneynessEnum] | None = None,
-    trade_side: list[TradeSideEnum] | None = None,
+    contract_type: ContractTypeFilter | None = None,
+    moneyness: list[MoneynessType] | None = None,
+    trade_side: list[TradeSideCodeType] | None = None,
     min_premium: float | None = None,
     strikes: list[float] | None = None,
     last_n: int = 20,
@@ -1270,56 +1101,32 @@ def qd_get_order_flow(
         last_n: Number of recent entries to show (default: 20)
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-        tool = _get_specs()["order_flow"]
-
-        # Build filter inline since order_flow has many specialized fields
-        tool_dto = c.get_tool(tool.tool_id)
-        original_filter: dict[str, Any] | None = None
-        if tool_dto:
-            original_filter = tool_dto.get("metadata", {}).get("filter", {})
-            new_filter = dict(original_filter) if original_filter else {}
-
-            if contract_type is not None:
-                new_filter["contractType"] = {
-                    "filterOperationType": "EQUALS",
-                    "value": contract_type.value,
-                }
-            if moneyness is not None:
-                new_filter["moneynessMoneyType"] = {
-                    "filterOperationType": "EQUALS",
-                    "value": [m.value for m in moneyness],
-                }
-            if trade_side is not None:
-                new_filter["tradeSideCodeType"] = {
-                    "filterOperationType": "EQUALS",
-                    "value": [t.value for t in trade_side],
-                }
-            if min_premium is not None:
-                new_filter["premiumInCents"] = {
-                    "filterOperationType": "GREATER_THAN_OR_EQUAL_TO",
-                    "value": int(min_premium * 100),
-                }
-            if strikes is not None:
-                new_filter["strikePriceInCents"] = {
-                    "filterOperationType": "EQUALS",
-                    "value": [int(s * 100) for s in strikes],
-                }
-
-            if any([contract_type, moneyness, trade_side, min_premium, strikes]):
-                c.update_tool_metadata(tool.tool_id, {"filter": new_filter})
-
-        try:
-            data = c.fetch_consolidated_flow(tool.tool_id)
-        finally:
-            if original_filter is not None:
-                c.update_tool_metadata(tool.tool_id, {"filter": original_filter})
-
-        _restore_page_filter(changed)
+        with tool_context(
+            "order_flow",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            filter_updates={
+                "contractType": _eq(contract_type.value) if contract_type is not None else None,
+                "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
+                "tradeSideCodeType": _eq([t.value for t in trade_side]) if trade_side else None,
+                "premiumInCents": (
+                    {
+                        "filterOperationType": "GREATER_THAN_OR_EQUAL_TO",
+                        "value": int(min_premium * 100),
+                    }
+                    if min_premium is not None
+                    else None
+                ),
+                "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_consolidated_flow(ctx.tool_spec.tool_id)
         return _fmt_order_flow(data, last_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching order flow: {e}"
+        return format_error("order flow", e)
 
 
 @mcp.tool()
@@ -1339,47 +1146,78 @@ def qd_get_market_snapshot(
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
     """
     try:
-        c = _get_client()
-        changed = _apply_page_filter(date, ticker, expiration_date)
-
         sections: list[str] = []
 
-        # GEX walls
-        tool_exp = _get_specs()["exposure_by_strike"]
-        c.update_tool_metadata(tool_exp.tool_id, {"greekModeType": "GAMMA"})
-        gex_data = c.fetch_strike_data(tool_exp.tool_id)
-        sections.append(_fmt_walls(gex_data, "GAMMA", ticker=ticker))
+        # GEX walls (snapshot+restore the exposure tool's metadata for us).
+        with tool_context(
+            "exposure_by_strike",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={"greekModeType": "GAMMA"},
+        ) as ctx:
+            gex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
+            sections.append(_fmt_walls(gex_data, "GAMMA", ticker=ticker))
 
-        # DEX walls
-        c.update_tool_metadata(tool_exp.tool_id, {"greekModeType": "DELTA"})
-        dex_data = c.fetch_strike_data(tool_exp.tool_id)
-        sections.append(_fmt_walls(dex_data, "DELTA", ticker=ticker))
+        # DEX walls -- separate context so the previous one restores cleanly.
+        with tool_context(
+            "exposure_by_strike",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={"greekModeType": "DELTA"},
+        ) as ctx:
+            dex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
+            sections.append(_fmt_walls(dex_data, "DELTA", ticker=ticker))
 
-        # Restore to GAMMA
-        c.update_tool_metadata(tool_exp.tool_id, {"greekModeType": "GAMMA"})
+        # Remaining sections only need the page filter -- no per-tool metadata
+        # mutations -- so we use needs_tool=False to skip the GET/PUT pair.
+        with tool_context(
+            "net_drift",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            needs_tool=False,
+        ) as ctx:
+            drift_data = ctx.client.fetch_net_drift(ctx.tool_spec.tool_id)
+            sections.append(_fmt_drift(drift_data, last_n=5))
 
-        # Net drift
-        drift_data = c.fetch_net_drift(_get_specs()["net_drift"].tool_id)
-        sections.append(_fmt_drift(drift_data, last_n=5))
+        with tool_context(
+            "max_pain",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            needs_tool=False,
+        ) as ctx:
+            mp_data = ctx.client.fetch_max_pain(ctx.tool_spec.tool_id)
+            sections.append(_fmt_max_pain(mp_data))
 
-        # Max pain
-        mp_data = c.fetch_max_pain(_get_specs()["max_pain"].tool_id)
-        sections.append(_fmt_max_pain(mp_data))
+        with tool_context(
+            "contract_side_stats",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            needs_tool=False,
+        ) as ctx:
+            tss_data = ctx.client.fetch_trade_side_stats(ctx.tool_spec.tool_id)
+            sections.append(_fmt_trade_side_stats(tss_data))
 
-        # Trade side stats
-        tss_data = c.fetch_trade_side_stats(_get_specs()["contract_side_stats"].tool_id)
-        sections.append(_fmt_trade_side_stats(tss_data))
-
-        # Contract stats
-        cs_data = c.fetch_contract_statistics(_get_specs()["contract_statistics"].tool_id)
-        sections.append(_fmt_contract_stats(cs_data))
-
-        _restore_page_filter(changed)
+        with tool_context(
+            "contract_statistics",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            needs_tool=False,
+        ) as ctx:
+            cs_data = ctx.client.fetch_contract_statistics(ctx.tool_spec.tool_id)
+            sections.append(_fmt_contract_stats(cs_data))
 
         divider = "\n" + "=" * 56 + "\n"
         return divider.join(sections)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
-        return f"Error fetching market snapshot: {e}"
+        return format_error("market snapshot", e)
 
 
 @mcp.tool()
@@ -1410,6 +1248,8 @@ def qd_set_page_date(
         if ok:
             return f"Page set to {ticker} on {date} (expiration: {exp_label}). All subsequent tool calls will return data for this session."
         return f"Failed to set page filter."
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
     except Exception as e:
         return f"Error setting page filter: {e}"
 
