@@ -1,0 +1,229 @@
+{
+  "response": {
+    "statistics": {
+      "optionsOrderFlowContractTradeSideStatisticsSumMap": {
+        "CALL": {
+          "M": {
+            "numberOfTrades": 91,
+            "premiumInCentsSum": 4098025700,
+            "sizeSum": 14618
+          },
+          "BB": {
+            "numberOfTrades": 128,
+            "premiumInCentsSum": 2299968000,
+            "sizeSum": 45753
+          },
+          "B": {
+            "numberOfTrades": 387,
+            "premiumInCentsSum": 12459860300,
+            "sizeSum": 81526
+          },
+          "AA": {
+            "numberOfTrades": 102,
+            "premiumInCentsSum": 3584434900,
+            "sizeSum": 34295
+          },
+          "A": {
+            "numberOfTrades": 365,
+            "premiumInCentsSum": 11596726700,
+            "sizeSum": 62184
+          }
+        },
+        "PUT": {
+          "M": {
+            "numberOfTrades": 57,
+            "premiumInCentsSum": 646441100,
+            "sizeSum": 9545
+          },
+          "BB": {
+            "numberOfTrades": 71,
+            "premiumInCentsSum": 1148696300,
+            "sizeSum": 13415
+          },
+          "B": {
+            "numberOfTrades": 281,
+            "premiumInCentsSum": 2293747100,
+            "sizeSum": 48933
+          },
+          "AA": {
+            "numberOfTrades": 85,
+            "premiumInCentsSum": 1009094100,
+            "sizeSum": 15638
+          },
+          "A": {
+            "numberOfTrades": 190,
+            "premiumInCentsSum": 1787360500,
+            "sizeSum": 34700
+          }
+        }
+      }
+    },
+    "trades": [
+      {
+        "id": "0323e512-5c13-44d6-a3f6-cd98ff30b6bb",
+        "tradeTime": 1777665597865,
+        "ticker": "SPX",
+        "expirationDate": "2026-05-01",
+        "fractionalDaysToExpiration": 0.04168981481481481,
+        "strikePriceInCents": 723500,
+        "contractType": "PUT",
+        "sentimentType": "BULLISH",
+        "stockPriceInCents": 723098,
+        "size": 118,
+        "optionPriceInCents": 528,
+        "askPriceInCents": 600,
+        "bidPriceInCents": 480,
+        "tradeSideCode": "B",
+        "premiumInCents": 6234000,
+        "tradeType": "M2S_AUTO",
+        "tradeConsolidationType": "SPLIT",
+        "exchange": "CBOE",
+        "volume": 133018,
+        "openInterest": 132,
+        "bidAskSpreadInCents": 120,
+        "comprisingTrades": [],
+        "greeks": {
+          "sigma": 0.09298324584960938,
+          "delta": -0.7108601724773793,
+          "vega": 0.2641630354210865,
+          "theta": -28.754056280418165,
+          "rho": -0.005877108368300304,
+          "omega": -974.8853639016563,
+          "charm": -2.330164306889953,
+          "gamma": 0.04757030343765329,
+          "vanna": 0.020472434824815245,
+          "veta": 4.169229400946605,
+          "vomma": 87.94909667395561,
+          "color": -15.387121502566371,
+          "speed": 0.003673538801700086,
+          "ultima": -25.44768570260776,
+          "zomma": -0.3532226577136027
+        },
+        "impliedVolatility": 9.298324584960938,
+        "isETF": false,
+        "isGoldenSweep": false,
+        "isIndex": true,
+        "isOpeningPosition": false,
+        "isUnusual": false,
+        "isVolumeGreaterThanOpenInterest": true,
+        "moneyness": {
+          "moneyType": "IN_THE_MONEY",
+          "degreeInCents": 402,
+          "degreeInPercent": 0.055594124171274156
+        },
+        "sector": "NOT_APPLICABLE",
+        "industry": "NOT_APPLICABLE"
+      },
+      {
+        "id": "63bf0896-9179-4bcb-aba3-a2fdb457d724",
+        "tradeTime": 1777665597400,
+        "ticker": "SPX",
+        "expirationDate": "2026-05-01",
+        "fractionalDaysToExpiration": 0.04168981481481481,
+        "strikePriceInCents": 723000,
+        "contractType": "CALL",
+        "sentimentType": "BEARISH",
+        "stockPriceInCents": 723098,
+        "size": 128,
+        "optionPriceInCents": 92,
+        "askPriceInCents": 145,
+        "bidPriceInCents": 100,
+        "tradeSideCode": "BB",
+        "premiumInCents": 1181000,
+        "tradeType": "M2S_AUTO",
+        "tradeConsolidationType": "SPLIT",
+        "exchange": "CBOE",
+        "volume": 21165,
+        "openInterest": 3116,
+        "bidAskSpreadInCents": 45,
+        "comprisingTrades": [],
+        "greeks": {
+          "sigma": 0.000476837158203125,
+          "delta": 1.0,
+          "vega": 6.088602821510279e-43,
+          "theta": -0.9904053027491008,
+          "rho": 0.008257962732644121,
+          "omega": 7080.242129598964,
+          "charm": 1.0977180272417329e-40,
+          "gamma": 2.1380415029467e-41,
+          "vanna": -2.2897897480622935e-40,
+          "veta": 1.1829320801971843e-39,
+          "vomma": 2.452310181624358e-35,
+          "color": 3.4866215471634587e-35,
+          "speed": -8.04071321236534e-39,
+          "ultima": 9.722898295670967e-32,
+          "zomma": 8.566564504332046e-36
+        },
+        "impliedVolatility": 0.0476837158203125,
+        "isETF": false,
+        "isGoldenSweep": false,
+        "isIndex": true,
+        "isOpeningPosition": false,
+        "isUnusual": false,
+        "isVolumeGreaterThanOpenInterest": true,
+        "moneyness": {
+          "moneyType": "AT_THE_MONEY",
+          "degreeInCents": 98,
+          "degreeInPercent": 0.013552796439763351
+        },
+        "sector": "NOT_APPLICABLE",
+        "industry": "NOT_APPLICABLE"
+      },
+      {
+        "id": "82a5b1bd-3afa-4b5d-8b9c-7fdd7d006a1a",
+        "tradeTime": 1777665577137,
+        "ticker": "SPX",
+        "expirationDate": "2026-05-01",
+        "fractionalDaysToExpiration": 0.0419212962962963,
+        "strikePriceInCents": 717500,
+        "contractType": "CALL",
+        "sentimentType": "BEARISH",
+        "stockPriceInCents": 723277,
+        "size": 65,
+        "optionPriceInCents": 5776,
+        "askPriceInCents": 6000,
+        "bidPriceInCents": 5600,
+        "tradeSideCode": "B",
+        "premiumInCents": 37544000,
+        "tradeType": "MULTI_AUTO_COB",
+        "tradeConsolidationType": "BLOCK",
+        "exchange": "CBOE",
+        "volume": 3589,
+        "openInterest": 3037,
+        "bidAskSpreadInCents": 400,
+        "comprisingTrades": [],
+        "greeks": {
+          "sigma": 0.000476837158203125,
+          "delta": 1.0,
+          "vega": 0.0,
+          "theta": -0.9828710680345791,
+          "rho": 0.008240645852826958,
+          "omega": 125.11017901694794,
+          "charm": 0.0,
+          "gamma": 0.0,
+          "vanna": 0.0,
+          "veta": 0.0,
+          "vomma": 0.0,
+          "color": 0.0,
+          "speed": 0.0,
+          "ultima": 0.0,
+          "zomma": 0.0
+        },
+        "impliedVolatility": 0.0476837158203125,
+        "isETF": false,
+        "isGoldenSweep": false,
+        "isIndex": true,
+        "isOpeningPosition": false,
+        "isUnusual": false,
+        "isVolumeGreaterThanOpenInterest": true,
+        "moneyness": {
+          "moneyType": "IN_THE_MONEY",
+          "degreeInCents": 5777,
+          "degreeInPercent": 0.7987257993825325
+        },
+        "sector": "NOT_APPLICABLE",
+        "industry": "NOT_APPLICABLE"
+      }
+    ]
+  }
+}
