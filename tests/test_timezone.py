@@ -27,8 +27,7 @@ class _FrozenDatetime(datetime):
 
     @classmethod
     def now(cls, tz=None):  # type: ignore[override]
-        if tz is None:
-            return cls._now_utc.replace(tzinfo=None)
+        assert tz is not None, "test helper requires explicit tz"
         return cls._now_utc.astimezone(tz)
 
 
