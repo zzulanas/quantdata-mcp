@@ -39,8 +39,7 @@ test = [
     "pytest-cov",
 ]
 dev = [
-    "pytest>=7",
-    "pytest-cov",
+    "quantdata-mcp[test]",
     "ruff>=0.8",
     "mypy>=1.10",
     "build",
@@ -64,6 +63,10 @@ build-backend = "hatchling.build"
 packages = ["quantdata_mcp"]
 
 [tool.hatch.build.targets.sdist]
+# Intentionally exclude `tests/` from the sdist published to PyPI:
+# end-users installing the package don't need the test suite, and PyPI sdists
+# conventionally ship only what's required to build/install. Contributors who
+# want to run tests should clone the repo (where `tests/` lives at the root).
 include = [
     "quantdata_mcp",
     "README.md",
@@ -76,7 +79,7 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "W"]
+select = ["E", "F", "I", "B", "UP", "W", "SIM", "RUF", "C4"]
 ignore = ["E501"]
 
 [tool.ruff.format]
@@ -85,6 +88,8 @@ ignore = ["E501"]
 python_version = "3.11"
 strict_optional = true
 warn_unused_ignores = true
+check_untyped_defs = true
+no_implicit_reexport = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
