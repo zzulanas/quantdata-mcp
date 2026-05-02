@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from quantdata_mcp import server
 from quantdata_mcp._context import AUTH_ERROR_MESSAGE, format_error, tool_context
-from quantdata_mcp.client import QuantDataAuthError
+from quantdata_mcp.client import (
+    QuantDataAuthError,
+    QuantDataClient,
+    QuantDataRateLimitError,
+)
 
 
 def test_format_error_special_cases_auth_error() -> None:
@@ -70,3 +76,59 @@ def test_generic_exception_returns_error_fetching(mock_client, mock_specs) -> No
 
     assert result.startswith("Error fetching net drift:")
     assert "boom" in result
+
+
+# ---------------------------------------------------------------------------
+# client.set_page_filter must re-raise auth / rate-limit errors so the
+# friendly UX message reaches the LLM. Other errors still get logged + return
+# False (preserves backwards-compatible boolean return shape for happy-path
+# callers).
+# ---------------------------------------------------------------------------
+
+
+def _make_real_client() -> QuantDataClient:
+    """Return a real client with the network call patched out at __init__ time."""
+    return QuantDataClient(auth_token="dummy", instance_id="dummy", max_retries=1)
+
+
+def test_set_page_filter_reraises_auth_error() -> None:
+    client = _make_real_client()
+    with patch.object(
+        client, "_make_request", side_effect=QuantDataAuthError("401")
+    ):
+        with pytest.raises(QuantDataAuthError):
+            client.set_page_filter("page-abc", "2025-01-15", "SPX")
+
+
+def test_set_page_filter_reraises_rate_limit_error() -> None:
+    client = _make_real_client()
+    with patch.object(
+        client, "_make_request", side_effect=QuantDataRateLimitError("429")
+    ):
+        with pytest.raises(QuantDataRateLimitError):
+            client.set_page_filter("page-abc", "2025-01-15", "SPX")
+
+
+def test_set_page_filter_swallows_generic_errors() -> None:
+    """Other errors (network, etc.) still log + return False -- unchanged behavior."""
+    client = _make_real_client()
+    with patch.object(client, "_make_request", side_effect=RuntimeError("boom")):
+        result = client.set_page_filter("page-abc", "2025-01-15", "SPX")
+    assert result is False
+
+
+def test_qd_set_page_date_surfaces_auth_message_on_401() -> None:
+    """The KEY regression: qd_set_page_date is the only tool whose ONLY API
+    call is set_page_filter. Before fix #1, set_page_filter swallowed 401s
+    and the user saw "Failed to set page filter." Now they see the friendly
+    re-run-setup message.
+    """
+    client = MagicMock()
+    client.set_page_filter.side_effect = QuantDataAuthError("token expired")
+
+    with patch.object(server, "_get_client", lambda: client), patch.object(
+        server, "_get_page_id", lambda: "page-abc"
+    ):
+        result = server.qd_set_page_date(date="2025-01-15", ticker="SPX")
+
+    assert result == AUTH_ERROR_MESSAGE

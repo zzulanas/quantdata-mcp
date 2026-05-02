@@ -21,6 +21,7 @@ from quantdata_mcp._context import (
     AUTH_ERROR_MESSAGE,
     _eq,
     format_error,
+    page_filter_context,
     tool_context,
 )
 from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
@@ -1148,69 +1149,85 @@ def qd_get_market_snapshot(
     try:
         sections: list[str] = []
 
-        # GEX walls (snapshot+restore the exposure tool's metadata for us).
-        with tool_context(
-            "exposure_by_strike",
+        # All six section fetches share ONE page-filter scope -- the page
+        # filter is applied once on enter and restored once on exit, instead
+        # of once per inner tool_context (which would be 6 applies + 6
+        # restores for a non-default ticker).
+        with page_filter_context(
             ticker=ticker,
             date=date,
             expiration_date=expiration_date,
-            metadata_updates={"greekModeType": "GAMMA"},
-        ) as ctx:
-            gex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
-            sections.append(_fmt_walls(gex_data, "GAMMA", ticker=ticker))
+        ):
+            # GEX walls (snapshot+restore the exposure tool's metadata for us).
+            with tool_context(
+                "exposure_by_strike",
+                ticker=ticker,
+                date=date,
+                expiration_date=expiration_date,
+                metadata_updates={"greekModeType": "GAMMA"},
+                skip_page_filter=True,
+            ) as ctx:
+                gex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
+                sections.append(_fmt_walls(gex_data, "GAMMA", ticker=ticker))
 
-        # DEX walls -- separate context so the previous one restores cleanly.
-        with tool_context(
-            "exposure_by_strike",
-            ticker=ticker,
-            date=date,
-            expiration_date=expiration_date,
-            metadata_updates={"greekModeType": "DELTA"},
-        ) as ctx:
-            dex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
-            sections.append(_fmt_walls(dex_data, "DELTA", ticker=ticker))
+            # DEX walls -- separate context so the previous one restores cleanly.
+            with tool_context(
+                "exposure_by_strike",
+                ticker=ticker,
+                date=date,
+                expiration_date=expiration_date,
+                metadata_updates={"greekModeType": "DELTA"},
+                skip_page_filter=True,
+            ) as ctx:
+                dex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
+                sections.append(_fmt_walls(dex_data, "DELTA", ticker=ticker))
 
-        # Remaining sections only need the page filter -- no per-tool metadata
-        # mutations -- so we use needs_tool=False to skip the GET/PUT pair.
-        with tool_context(
-            "net_drift",
-            ticker=ticker,
-            date=date,
-            expiration_date=expiration_date,
-            needs_tool=False,
-        ) as ctx:
-            drift_data = ctx.client.fetch_net_drift(ctx.tool_spec.tool_id)
-            sections.append(_fmt_drift(drift_data, last_n=5))
+            # Remaining sections only need the page filter -- no per-tool
+            # metadata mutations -- so we use needs_tool=False to skip the
+            # GET/PUT pair.
+            with tool_context(
+                "net_drift",
+                ticker=ticker,
+                date=date,
+                expiration_date=expiration_date,
+                needs_tool=False,
+                skip_page_filter=True,
+            ) as ctx:
+                drift_data = ctx.client.fetch_net_drift(ctx.tool_spec.tool_id)
+                sections.append(_fmt_drift(drift_data, last_n=5))
 
-        with tool_context(
-            "max_pain",
-            ticker=ticker,
-            date=date,
-            expiration_date=expiration_date,
-            needs_tool=False,
-        ) as ctx:
-            mp_data = ctx.client.fetch_max_pain(ctx.tool_spec.tool_id)
-            sections.append(_fmt_max_pain(mp_data))
+            with tool_context(
+                "max_pain",
+                ticker=ticker,
+                date=date,
+                expiration_date=expiration_date,
+                needs_tool=False,
+                skip_page_filter=True,
+            ) as ctx:
+                mp_data = ctx.client.fetch_max_pain(ctx.tool_spec.tool_id)
+                sections.append(_fmt_max_pain(mp_data))
 
-        with tool_context(
-            "contract_side_stats",
-            ticker=ticker,
-            date=date,
-            expiration_date=expiration_date,
-            needs_tool=False,
-        ) as ctx:
-            tss_data = ctx.client.fetch_trade_side_stats(ctx.tool_spec.tool_id)
-            sections.append(_fmt_trade_side_stats(tss_data))
+            with tool_context(
+                "contract_side_stats",
+                ticker=ticker,
+                date=date,
+                expiration_date=expiration_date,
+                needs_tool=False,
+                skip_page_filter=True,
+            ) as ctx:
+                tss_data = ctx.client.fetch_trade_side_stats(ctx.tool_spec.tool_id)
+                sections.append(_fmt_trade_side_stats(tss_data))
 
-        with tool_context(
-            "contract_statistics",
-            ticker=ticker,
-            date=date,
-            expiration_date=expiration_date,
-            needs_tool=False,
-        ) as ctx:
-            cs_data = ctx.client.fetch_contract_statistics(ctx.tool_spec.tool_id)
-            sections.append(_fmt_contract_stats(cs_data))
+            with tool_context(
+                "contract_statistics",
+                ticker=ticker,
+                date=date,
+                expiration_date=expiration_date,
+                needs_tool=False,
+                skip_page_filter=True,
+            ) as ctx:
+                cs_data = ctx.client.fetch_contract_statistics(ctx.tool_spec.tool_id)
+                sections.append(_fmt_contract_stats(cs_data))
 
         divider = "\n" + "=" * 56 + "\n"
         return divider.join(sections)

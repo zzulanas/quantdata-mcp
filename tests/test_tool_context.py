@@ -168,7 +168,14 @@ def test_page_filter_not_re_set_when_already_default(mock_client, context_kwargs
     assert mock_client.set_page_filter.call_count == 1
 
 
-def test_time_minutes_triggers_set_and_reset(mock_client, context_kwargs) -> None:
+def test_time_minutes_folded_into_apply_put(mock_client, context_kwargs) -> None:
+    """``time_minutes`` rides along with the apply PUT; restore PUT drops it.
+
+    Previously this used ``client.set_tool_time`` / ``client.reset_to_live``,
+    which each did their own GET+PUT pair (3 GETs + 4 PUTs total). Folding
+    the time scrubber into the existing apply/restore PUT pair collapses the
+    cost back to the documented 1 GET + 2 PUTs budget.
+    """
     with tool_context(
         "exposure_by_strike",
         ticker="SPX",
@@ -177,10 +184,25 @@ def test_time_minutes_triggers_set_and_reset(mock_client, context_kwargs) -> Non
     ):
         pass
 
-    mock_client.set_tool_time.assert_called_once_with(
-        "tool-exposure_by_strike", 600
-    )
-    mock_client.reset_to_live.assert_called_once_with("tool-exposure_by_strike")
+    # The dedicated time-scrubber endpoints should NOT be called -- folded
+    # into the apply / restore PUTs instead.
+    assert mock_client.set_tool_time.call_count == 0
+    assert mock_client.reset_to_live.call_count == 0
+
+    # Cost budget holds: 1 GET + 2 PUTs even with time_minutes set.
+    assert mock_client.get_tool.call_count == 1
+    put_calls = [
+        c for c in mock_client._make_request.call_args_list
+        if c.args[0] == "PUT" and c.args[1] == "tool"
+    ]
+    assert len(put_calls) == 2
+
+    # Apply PUT carries the time scrubber.
+    apply_payload = put_calls[0].kwargs["json"]
+    assert apply_payload["metadata"]["numberOfMinutesIntoMarketOpen"] == 600
+    # Restore PUT drops it (snapshot was taken before the assignment).
+    restore_payload = put_calls[1].kwargs["json"]
+    assert "numberOfMinutesIntoMarketOpen" not in restore_payload["metadata"]
 
 
 def test_metadata_updates_do_not_leak_into_snapshot(
@@ -202,3 +224,58 @@ def test_metadata_updates_do_not_leak_into_snapshot(
     # The original DTO had DELTA / isNet=False -- must come back unchanged.
     assert restore["metadata"]["greekModeType"] == "DELTA"
     assert restore["metadata"]["isNet"] is False
+
+
+def test_snapshot_preserves_unknown_future_metadata_keys(
+    mock_client, make_tool_dto, context_kwargs
+) -> None:
+    """Forward-compat: unknown / future top-level metadata keys round-trip.
+
+    The snapshot/restore cycle is shape-agnostic -- if QuantData adds a new
+    metadata key tomorrow, it should pass through unchanged when our DTO
+    doesn't know about it. This locks in the design intent.
+    """
+    # Inject some hypothetical future keys alongside an existing one.
+    dto = make_tool_dto(
+        metadata_overrides={
+            "futureKey1": "x",
+            "futureKey2": 42,
+            "futureNestedKey": {"nested": True, "list": [1, 2, 3]},
+            "greekModeType": "GAMMA",  # known key, mutated below
+        }
+    )
+    mock_client.get_tool.return_value = dto
+
+    with tool_context(
+        "net_drift",
+        metadata_updates={"greekModeType": "DELTA"},  # mutate the known key
+        **context_kwargs,
+    ):
+        pass
+
+    put_calls = [
+        c for c in mock_client._make_request.call_args_list
+        if c.args[0] == "PUT" and c.args[1] == "tool"
+    ]
+    assert len(put_calls) == 2
+    apply_payload = put_calls[0].kwargs["json"]
+    restore_payload = put_calls[1].kwargs["json"]
+
+    # Apply PUT carries the mutated known key AND the unknown future keys.
+    assert apply_payload["metadata"]["greekModeType"] == "DELTA"
+    assert apply_payload["metadata"]["futureKey1"] == "x"
+    assert apply_payload["metadata"]["futureKey2"] == 42
+    assert apply_payload["metadata"]["futureNestedKey"] == {
+        "nested": True,
+        "list": [1, 2, 3],
+    }
+
+    # Restore PUT brings back the ORIGINAL value for the known key AND
+    # preserves the unknown future keys verbatim.
+    assert restore_payload["metadata"]["greekModeType"] == "GAMMA"
+    assert restore_payload["metadata"]["futureKey1"] == "x"
+    assert restore_payload["metadata"]["futureKey2"] == 42
+    assert restore_payload["metadata"]["futureNestedKey"] == {
+        "nested": True,
+        "list": [1, 2, 3],
+    }
