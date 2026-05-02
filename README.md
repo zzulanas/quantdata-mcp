@@ -1,5 +1,9 @@
 # QuantData MCP Server
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![PyPI: coming soon](https://img.shields.io/badge/PyPI-coming%20soon-lightgrey.svg)](https://github.com/zzulanas/quantdata-mcp)
+
 ## THIS IS AN UNOFFICIAL MCP SERVER I AM NOT AFFILIATED WITH QUANTDATA IN ANY WAY
 
 MCP server that gives AI agents (Claude Code, Claude Desktop, etc.) access to real-time and historical options market data from [QuantData](https://quantdata.us).
@@ -10,6 +14,8 @@ MCP server that gives AI agents (Claude Code, Claude Desktop, etc.) access to re
 
 **Available data:** GEX/DEX/CEX/VEX exposure walls, exposure term structure, net drift, max pain, IV rank, trade side statistics, open interest, net flow, consolidated order flow, contract OHLCV, and contract statistics.
 
+**Documentation:** see [GETTING_STARTED.md](GETTING_STARTED.md) for a click-by-click walkthrough.
+
 ## Quick Start
 
 ### 1. Install
@@ -19,7 +25,7 @@ You need **Python 3.11+** installed. Check with `python3 --version`.
 - **Mac:** `brew install python` (or download from [python.org](https://www.python.org/downloads/))
 - **Windows:** Download from [python.org](https://www.python.org/downloads/) (check "Add to PATH" during install)
 
-Then install the package:
+Then install the package directly from GitHub (recommended today):
 
 ```bash
 # With pip
@@ -30,6 +36,8 @@ uv pip install git+https://github.com/zzulanas/quantdata-mcp.git
 ```
 
 > **Don't have uv?** Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh` (Mac/Linux) or `irm https://astral.sh/uv/install.ps1 | iex` (Windows). It's a faster alternative to pip.
+
+> **PyPI:** once published, `pip install quantdata-mcp` (or `uv pip install quantdata-mcp`) will work out of the box. Until then, use the GitHub install above.
 
 ### 2. Get Your Credentials
 
@@ -257,6 +265,10 @@ quantdata-mcp setup --auth-token "NEW_TOKEN" --instance-id "SAME_ID"
 
 **"No such file or directory" in Claude Desktop:** Use the full path to `quantdata-mcp` (see step 4 above).
 
+## Contributing
+
+Contributions are welcome — bug reports, new tools wrapping additional QuantData widgets, formatter improvements, and docs all help. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev environment setup, the recipe for adding a new MCP tool, and the conventions to follow when sending a PR.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

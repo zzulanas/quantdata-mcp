@@ -273,11 +273,56 @@ When you discover a shape change, document it in your PR — it helps future deb
 
 ## Releasing
 
-Maintainers only:
+Maintainers only. There is no CI — releases are built and published manually
+from a clean checkout of `main`.
 
-1. Bump `__version__` in `quantdata_mcp/__init__.py` and `version` in `pyproject.toml`.
-2. Tag the commit: `git tag vX.Y.Z && git push --tags`.
-3. Users install with `uv pip install git+https://github.com/zzulanas/quantdata-mcp.git@vX.Y.Z`.
+```bash
+# 1. Bump version in pyproject.toml AND quantdata_mcp/__init__.py.
+#    (tests/test_packaging.py asserts the two stay in sync.)
+# 2. Update release notes (write release-notes.md or use the GitHub UI).
+
+# 3. Commit + tag
+git commit -am "release: vX.Y.Z"
+git tag vX.Y.Z
+git push && git push --tags
+
+# 4. Build distribution artifacts (sdist + wheel)
+#    `pipx` works in any shell without an active venv. (`pip install --user`
+#    is an equally portable alternative; `uv pip install` requires an active venv.)
+pipx install build
+pipx install twine
+python -m build  # produces dist/quantdata_mcp-X.Y.Z.tar.gz + .whl
+
+# 5. Verify the artifacts before uploading
+twine check dist/*
+
+# 6. Dry-run on TestPyPI BEFORE publishing to real PyPI.
+#    PyPI is unrepublishable for a given version — fat-fingering 0.1.0
+#    means you can never re-release as 0.1.0. Always dry-run first.
+#    (One-time setup: register at https://test.pypi.org/account/register/
+#    and create an API token at https://test.pypi.org/manage/account/token/.)
+twine upload --repository testpypi dist/*
+pip install --index-url https://test.pypi.org/simple/ \
+    --extra-index-url https://pypi.org/simple/ \
+    "quantdata-mcp==X.Y.Z"
+# Verify the install actually works (e.g. `quantdata-mcp --help`),
+# then proceed to real PyPI:
+
+# 7. Publish to PyPI
+twine upload dist/*
+
+# 8. Create the GitHub release from the tag and attach the built artifacts
+gh release create vX.Y.Z dist/* --notes-file release-notes.md
+```
+
+After publishing, users can install with:
+
+```bash
+pip install quantdata-mcp           # PyPI
+uv pip install quantdata-mcp        # PyPI via uv
+# or pin a specific git tag:
+uv pip install git+https://github.com/zzulanas/quantdata-mcp.git@vX.Y.Z
+```
 
 ---
 
