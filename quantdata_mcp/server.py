@@ -434,7 +434,7 @@ def _fmt_net_flow(data: dict[str, Any] | None, last_n: int = 10) -> str:
             else:
                 # [timestamp, call_net, ..., put_net, ...]
                 call_flow = entry[1] / 100
-                put_flow = entry[4] / 100 if len(entry) > 4 else 0
+                put_flow = entry[4] / 100
                 
             net = call_flow - put_flow
             try:
@@ -729,9 +729,9 @@ class DataModeEnum(str, Enum):
 
 
 class MoneynessEnum(str, Enum):
-    OUT_OF_THE_MONEY = "OUT_OF_THE_MONEY"
-    IN_THE_MONEY = "IN_THE_MONEY"
-    AT_THE_MONEY = "AT_THE_MONEY"
+    OTM = "OUT_OF_THE_MONEY"
+    ITM = "IN_THE_MONEY"
+    ATM = "AT_THE_MONEY"
 
 
 class TradeSideEnum(str, Enum):
@@ -743,17 +743,17 @@ class TradeSideEnum(str, Enum):
 
 
 class RepresentationModeEnum(str, Enum):
-    PER_ONE_PERCENT_MOVE = "PER_ONE_PERCENT_MOVE"   # Exposure per 1% move (default)
-    PER_ONE_DOLLAR_MOVE = "PER_ONE_DOLLAR_MOVE"    # Exposure per $1 move
+    PER_1PCT = "PER_ONE_PERCENT_MOVE"   # Exposure per 1% move (default)
+    PER_1USD = "PER_ONE_DOLLAR_MOVE"    # Exposure per $1 move
     RAW = "RAW"                          # Raw exposure values
 
 
 class AggregationEnum(str, Enum):
-    ONE_MINUTE = "ONE_MINUTE"
-    FIVE_MINUTE = "FIVE_MINUTE"
-    TEN_MINUTE = "TEN_MINUTE"
-    FIFTEEN_MINUTE = "FIFTEEN_MINUTE"
-    THIRTY_MINUTE = "THIRTY_MINUTE"
+    ONE_MIN = "ONE_MINUTE"
+    FIVE_MIN = "FIVE_MINUTE"
+    TEN_MIN = "TEN_MINUTE"
+    FIFTEEN_MIN = "FIFTEEN_MINUTE"
+    THIRTY_MIN = "THIRTY_MINUTE"
     ONE_HOUR = "ONE_HOUR"
 
 
@@ -769,7 +769,7 @@ def qd_get_exposure_by_strike(
     date: str | None = None,
     expiration_date: str | None = None,
     time_minutes: int | None = None,
-    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_ONE_PERCENT_MOVE,
+    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_1PCT,
     is_net: bool = True,
 ) -> str:
     """Get GEX/DEX/CEX/VEX wall data — top exposure levels by strike price.
@@ -783,7 +783,7 @@ def qd_get_exposure_by_strike(
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE; set differently for non-0DTE)
         time_minutes: Minutes from midnight for historical playback (570=9:30AM, 960=4PM)
-        representation_mode: PER_ONE_PERCENT_MOVE (per 1% move, default), PER_ONE_DOLLAR_MOVE (per $1 move), or RAW
+        representation_mode: PER_1PCT (per 1% move, default), PER_1USD (per $1 move), or RAW
         is_net: True for net (call+put combined), False for gross (separate). Default: True.
     """
     try:
@@ -827,7 +827,7 @@ def qd_get_net_drift(
     expiration_date: str | None = None,
     moneyness: list[MoneynessEnum] | None = None,
     strikes: list[float] | None = None,
-    aggregation: AggregationEnum = AggregationEnum.ONE_MINUTE,
+    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
     last_n: int = 10,
 ) -> str:
     """Get net drift data — cumulative call vs put premium flow.
@@ -839,9 +839,9 @@ def qd_get_net_drift(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
-        moneyness: Filter by moneyness — OUT_OF_THE_MONEY, IN_THE_MONEY, AT_THE_MONEY. Pass a list to combine (e.g. ["OTM", "ATM"]). Default: all.
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0, 5700.0]). Default: all.
-        aggregation: Time aggregation period — ONE_MINUTE (default), FIVE_MINUTE, TEN_MINUTE, FIFTEEN_MINUTE, THIRTY_MINUTE, ONE_HOUR.
+        aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
         last_n: Number of recent entries to show (default: 10)
     """
     try:
@@ -886,7 +886,7 @@ def qd_get_trade_side_stats(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
-        moneyness: Filter by moneyness — OUT_OF_THE_MONEY, IN_THE_MONEY, AT_THE_MONEY. Pass a list to combine. Default: all.
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
     """
     try:
@@ -1008,7 +1008,7 @@ def qd_get_net_flow(
     moneyness: list[MoneynessEnum] | None = None,
     trade_side: list[TradeSideEnum] | None = None,
     strikes: list[float] | None = None,
-    aggregation: AggregationEnum = AggregationEnum.ONE_MINUTE,
+    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
     data_mode: DataModeEnum = DataModeEnum.PREMIUM,
     last_n: int = 10,
 ) -> str:
@@ -1020,10 +1020,10 @@ def qd_get_net_flow(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
-        moneyness: Filter by moneyness — OUT_OF_THE_MONEY, IN_THE_MONEY, AT_THE_MONEY. Pass a list to combine. Default: all.
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
         trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
-        aggregation: Time aggregation period — ONE_MINUTE (default), FIVE_MINUTE, TEN_MINUTE, FIFTEEN_MINUTE, THIRTY_MINUTE, ONE_HOUR.
+        aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
         data_mode: PREMIUM (dollar value, default) or VOLUME.
         last_n: Number of recent entries to show (default: 10)
     """
@@ -1102,7 +1102,7 @@ def qd_get_contract_statistics(
         ticker: Ticker symbol (default: SPX)
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE). Required for non-0DTE tickers like AAPL/TSLA — use a valid expiration (e.g. monthly 3rd Friday)
-        moneyness: Filter by moneyness — OUT_OF_THE_MONEY, IN_THE_MONEY, AT_THE_MONEY. Pass a list to combine. Default: all.
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
         trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
     """
@@ -1132,7 +1132,7 @@ def qd_get_exposure_by_expiration(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_ONE_PERCENT_MOVE,
+    representation_mode: RepresentationModeEnum = RepresentationModeEnum.PER_1PCT,
     is_net: bool = True,
     strikes: list[float] | None = None,
 ) -> str:
@@ -1189,7 +1189,7 @@ def qd_get_contract_price(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
-    aggregation: AggregationEnum = AggregationEnum.ONE_MINUTE,
+    aggregation: AggregationEnum = AggregationEnum.ONE_MIN,
 ) -> str:
     """Get OHLCV price data for a specific options contract.
 
@@ -1201,7 +1201,7 @@ def qd_get_contract_price(
         ticker: Ticker symbol (default: SPX). Any optionable ticker works.
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE)
-        aggregation: Time aggregation period — ONE_MINUTE (default), FIVE_MINUTE, TEN_MINUTE, FIFTEEN_MINUTE, THIRTY_MINUTE, ONE_HOUR.
+        aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
     """
     try:
         c = _get_client()
@@ -1274,7 +1274,7 @@ def qd_get_order_flow(
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE)
         contract_type: Filter to CALL or PUT only. Default: both.
-        moneyness: Filter by moneyness — OUT_OF_THE_MONEY, IN_THE_MONEY, AT_THE_MONEY. Pass a list to combine. Default: all.
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
         trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
         min_premium: Minimum premium in dollars to filter trades (e.g. 10000 for $10K+). Default: no minimum.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
