@@ -413,12 +413,21 @@ def _fmt_trade_side_stats(data: dict[str, Any] | None) -> str:
 
 
 def _fmt_net_flow(data: dict[str, Any] | None, last_n: int = 10) -> str:
-    """Format net flow data."""
+    """Format net flow data.
+
+    Canonical shape (from /api/options/net-flow/{tool_id}):
+        response.netFlow -> list of 4-item arrays
+            [timestamp_ms, call_premium_cents, put_premium_cents, stock_price_cents]
+
+    Note: Net Flow and Net Drift are different endpoints with different shapes.
+    This formatter only handles Net Flow's 4-item rows. For Net Drift's 8-item
+    rows, use _fmt_drift. PR #1 added an 8-item branch here that was dead code —
+    the API never returns 8-item rows on the net-flow endpoint.
+    """
     if not data or "response" not in data:
         return "No net flow data available."
 
     resp = data["response"]
-    # Net flow structure: response.netFlow array similar to net drift
     flow_array = resp.get("netFlow", [])
     if not flow_array:
         return "No net flow entries."
@@ -428,28 +437,20 @@ def _fmt_net_flow(data: dict[str, Any] | None, last_n: int = 10) -> str:
     lines = [f"Net Flow — Last {len(entries)} entries", ""]
 
     for entry in entries:
-        if isinstance(entry, (list, tuple)) and len(entry) >= 4:
-            ts = entry[0]
-            # Handle both 4-item (Net Flow) and 8-item (Net Drift) structures
-            if len(entry) == 4:
-                # [timestamp, call_flow, put_flow, price]
-                call_flow = entry[1] / 100
-                put_flow = entry[2] / 100
-            else:
-                # [timestamp, call_net, ..., put_net, ...]
-                call_flow = entry[1] / 100
-                put_flow = entry[4] / 100
-                
-            net = call_flow - put_flow
-            try:
-                t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
-            except (OSError, ValueError):
-                t = str(ts)
-            lines.append(
-                f"  {t}  Call: ${call_flow:>+10,.0f}  Put: ${put_flow:>+10,.0f}  Net: ${net:>+10,.0f}"
-            )
-        elif isinstance(entry, dict):
-            lines.append(f"  {entry}")
+        # Defensive: skip rows that don't match the documented 4-item shape
+        if not isinstance(entry, (list, tuple)) or len(entry) < 4:
+            continue
+        ts, call_cents, put_cents, _price_cents = entry[0], entry[1], entry[2], entry[3]
+        call_flow = call_cents / 100
+        put_flow = put_cents / 100
+        net = call_flow - put_flow
+        try:
+            t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+        except (OSError, ValueError):
+            t = str(ts)
+        lines.append(
+            f"  {t}  Call: ${call_flow:>+10,.0f}  Put: ${put_flow:>+10,.0f}  Net: ${net:>+10,.0f}"
+        )
 
     return "\n".join(lines)
 
@@ -578,25 +579,23 @@ def _fmt_exposure_by_expiration(data: dict[str, Any] | None, greek_type: str, ti
 
 
 def _fmt_contract_price(data: dict[str, Any] | None) -> str:
-    """Format contract price OHLCV data."""
+    """Format contract price OHLCV data.
+
+    Canonical shape (from /api/options/contract/price/time/{tool_id}):
+        response.optionPriceOverTime -> list of arrays of length >= 6:
+            [timestamp_ms, open_cents, high_cents, low_cents, close_cents, volume, ...]
+
+    Trailing entries beyond index 5 are bid/ask/stock price snapshots in cents
+    that we don't render here. All price fields are cents — divide by 100.
+    """
     if not data or "response" not in data:
         return "No contract price data available."
 
     resp = data["response"]
-
-    price_data = resp.get(
-        "optionPriceOverTime",
-        resp.get("contractPriceOverTime", resp.get("priceOverTime", [])),
-    )
-    if not price_data and isinstance(resp, dict):
-        for key, val in resp.items():
-            if isinstance(val, list) and val:
-                price_data = val
-                break
+    price_data = resp.get("optionPriceOverTime", [])
 
     if not price_data:
-        # Dump available keys for debugging
-        return f"No contract price entries. Response keys: {list(resp.keys())}"
+        return "No contract price entries."
 
     lines = ["Contract Price (OHLCV)", ""]
     lines.append(
@@ -605,64 +604,56 @@ def _fmt_contract_price(data: dict[str, Any] | None) -> str:
     lines.append("-" * 72)
 
     for entry in price_data:
-        if isinstance(entry, (list, tuple)) and len(entry) >= 6:
-            ts = entry[0]
-            o = entry[1] / 100 if entry[1] else 0
-            h = entry[2] / 100 if entry[2] else 0
-            lo = entry[3] / 100 if entry[3] else 0
-            cl = entry[4] / 100 if entry[4] else 0
-            vol = entry[5] if len(entry) > 5 else 0
-            try:
-                t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
-            except (OSError, ValueError):
-                t = str(ts)
-            lines.append(
-                f"{t:>12}  ${o:>9.2f}  ${h:>9.2f}  ${lo:>9.2f}  ${cl:>9.2f}  {vol:>10,}"
-            )
-        elif isinstance(entry, dict):
-            ts = entry.get("timestamp", entry.get("time", ""))
-            o = entry.get("open", entry.get("openInCents", 0))
-            h = entry.get("high", entry.get("highInCents", 0))
-            lo = entry.get("low", entry.get("lowInCents", 0))
-            cl = entry.get("close", entry.get("closeInCents", 0))
-            vol = entry.get("volume", 0)
-            # Convert cents if needed
-            if "InCents" in str(entry.keys()):
-                o, h, lo, cl = o / 100, h / 100, lo / 100, cl / 100
-            if isinstance(ts, (int, float)):
-                try:
-                    ts = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
-                except (OSError, ValueError):
-                    pass
-            lines.append(
-                f"{str(ts):>12}  ${o:>9.2f}  ${h:>9.2f}  ${lo:>9.2f}  ${cl:>9.2f}  {vol:>10,}"
-            )
+        # Defensive: skip rows that don't match the documented OHLCV shape
+        if not isinstance(entry, (list, tuple)) or len(entry) < 6:
+            continue
+        ts = entry[0]
+        o = (entry[1] or 0) / 100
+        h = (entry[2] or 0) / 100
+        lo = (entry[3] or 0) / 100
+        cl = (entry[4] or 0) / 100
+        vol = entry[5] or 0
+        try:
+            t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+        except (OSError, ValueError):
+            t = str(ts)
+        lines.append(
+            f"{t:>12}  ${o:>9.2f}  ${h:>9.2f}  ${lo:>9.2f}  ${cl:>9.2f}  {vol:>10,}"
+        )
 
     return "\n".join(lines)
 
 
 def _fmt_order_flow(data: dict[str, Any] | None, last_n: int = 20) -> str:
-    """Format consolidated order flow data."""
+    """Format consolidated order flow data.
+
+    Canonical shape (from /api/options/order-flow/consolidated/{tool_id}):
+        response.trades -> list of trade dicts. Relevant fields:
+            tradeTime          (int, ms since epoch)
+            ticker             (str)
+            strikePriceInCents (int, cents)
+            contractType       ("CALL" | "PUT")
+            tradeSideCode      ("AA" | "A" | "M" | "B" | "BB")
+            premiumInCents     (int, cents)
+            size               (int)
+            sentimentType      ("BULLISH" | "BEARISH" | ...)
+
+    All price fields use the *InCents naming convention — divide by 100.
+    There is no array-style entry shape and no need for cents-vs-dollars
+    heuristics; the API is consistent.
+    """
     if not data or "response" not in data:
         return "No order flow data available."
 
     resp = data["response"]
+    trades = resp.get("trades", [])
 
-    # Try common response keys
-    flow_entries = resp.get("consolidatedFlows", resp.get("flows", resp.get("orders", [])))
-    if not flow_entries and isinstance(resp, dict):
-        for key, val in resp.items():
-            if isinstance(val, list) and val:
-                flow_entries = val
-                break
+    if not trades:
+        return "No order flow entries."
 
-    if not flow_entries:
-        return f"No order flow entries. Response keys: {list(resp.keys())}"
+    entries = trades[-last_n:] if len(trades) > last_n else trades
 
-    # Take last N entries
-    entries = flow_entries[-last_n:] if len(flow_entries) > last_n else flow_entries
-
-    lines = [f"Order Flow — Last {len(entries)} entries (of {len(flow_entries)} total)", ""]
+    lines = [f"Order Flow — Last {len(entries)} entries (of {len(trades)} total)", ""]
     lines.append(
         f"{'Time':>12}  {'Ticker':>6}  {'Strike':>10}  {'Type':>4}  {'Side':>4}  "
         f"{'Premium':>12}  {'Size':>8}  {'Sentiment':>10}"
@@ -670,46 +661,25 @@ def _fmt_order_flow(data: dict[str, Any] | None, last_n: int = 20) -> str:
     lines.append("-" * 82)
 
     for entry in entries:
-        if isinstance(entry, (list, tuple)):
-            # Array format: [timestamp, ticker, strike_cents, contract_type, side, premium_cents, size, ...]
-            ts = entry[0] if len(entry) > 0 else 0
-            tkr = entry[1] if len(entry) > 1 else ""
-            strike = (entry[2] / 100) if len(entry) > 2 and entry[2] else 0
-            ct = entry[3] if len(entry) > 3 else ""
-            side = entry[4] if len(entry) > 4 else ""
-            prem = (entry[5] / 100) if len(entry) > 5 and entry[5] else 0
-            size = entry[6] if len(entry) > 6 else 0
-            sent = entry[7] if len(entry) > 7 else ""
-            try:
-                t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
-            except (OSError, ValueError, TypeError):
-                t = str(ts)
-            ct_short = "C" if "CALL" in str(ct) else "P" if "PUT" in str(ct) else str(ct)
-            lines.append(
-                f"{t:>12}  {str(tkr):>6}  ${strike:>8,.0f}  {ct_short:>4}  {str(side):>4}  "
-                f"${prem:>10,.0f}  {size:>8,}  {str(sent):>10}"
-            )
-        elif isinstance(entry, dict):
-            ts = entry.get("timestamp", entry.get("time", entry.get("executedAtTimestamp", "")))
-            tkr = entry.get("ticker", entry.get("symbol", ""))
-            strike_raw = entry.get("strikePriceInCents", entry.get("strike", 0))
-            strike = strike_raw / 100 if strike_raw > 1000 else strike_raw  # heuristic for cents vs dollars
-            ct = entry.get("contractType", entry.get("type", ""))
-            side = entry.get("tradeSideCode", entry.get("side", ""))
-            prem_raw = entry.get("premiumInCents", entry.get("premium", 0))
-            prem = prem_raw / 100 if prem_raw > 10000 else prem_raw
-            size = entry.get("size", entry.get("volume", entry.get("quantity", 0)))
-            sent = entry.get("sentiment", "")
-            if isinstance(ts, (int, float)):
-                try:
-                    ts = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
-                except (OSError, ValueError):
-                    pass
-            ct_short = "C" if "CALL" in str(ct) else "P" if "PUT" in str(ct) else str(ct)
-            lines.append(
-                f"{str(ts):>12}  {str(tkr):>6}  ${strike:>8,.0f}  {ct_short:>4}  {str(side):>4}  "
-                f"${prem:>10,.0f}  {size:>8,}  {str(sent):>10}"
-            )
+        if not isinstance(entry, dict):
+            continue
+        ts = entry.get("tradeTime", 0)
+        tkr = entry.get("ticker", "")
+        strike = entry.get("strikePriceInCents", 0) / 100
+        ct = entry.get("contractType", "")
+        side = entry.get("tradeSideCode", "")
+        prem = entry.get("premiumInCents", 0) / 100
+        size = entry.get("size", 0)
+        sent = entry.get("sentimentType", "")
+        try:
+            t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+        except (OSError, ValueError, TypeError):
+            t = str(ts)
+        ct_short = "C" if ct == "CALL" else "P" if ct == "PUT" else str(ct)
+        lines.append(
+            f"{t:>12}  {str(tkr):>6}  ${strike:>8,.0f}  {ct_short:>4}  {str(side):>4}  "
+            f"${prem:>10,.0f}  {size:>8,}  {str(sent):>10}"
+        )
 
     return "\n".join(lines)
 
