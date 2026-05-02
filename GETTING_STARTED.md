@@ -18,8 +18,10 @@ Here's what a typical conversation looks like:
 
 > **Claude:** *(calls `qd_get_exposure_by_strike`)*
 
+<!-- If you change _fmt_walls in quantdata_mcp/server.py, update the example below to match. -->
+
 ```
-Gamma Exposure (Per 1%) — SPX $5,612.40
+GEX (Gamma Exposure) — SPX $5,612.40
 
     Strike    Net ($M)   Call ($M)    Put ($M)    Type
 --------------------------------------------------------
@@ -117,7 +119,7 @@ Stash both somewhere safe for the next step (a notes app, password manager, what
 
 > The README has a screenshot of what this looks like in DevTools — see the [credentials section](README.md#2-get-your-credentials) if you want a visual reference.
 
-> **Tokens expire.** When that happens (usually after a few hours to a day), you'll start getting `401 Unauthorized` errors. Just go back to your browser, grab a fresh `authorization` value, and re-run `quantdata-mcp setup` with the **same** `--instance-id`. Your existing page and tools will be reused, so this takes about 30 seconds.
+> **Tokens expire.** When that happens (usually after a few hours to a day), you'll start getting `401 Unauthorized` errors. Just go back to your browser, grab a fresh `authorization` value, and re-run `quantdata-mcp setup`. As long as your local config at `~/.quantdata-mcp/config.json` exists and its tools still resolve on the server, setup reuses your existing page — it doesn't matter whether the `--instance-id` is the same or different. Refreshing the token takes about 30 seconds.
 
 ---
 
@@ -135,31 +137,57 @@ quantdata-mcp setup \
 
 ### What this does
 
-The setup command does three things:
+The setup command does several things:
 
-1. **Validates your credentials** by calling QuantData's `/me` endpoint.
-2. **Creates a hidden "Agentic Page"** on your QuantData account. This page holds 11 chart widgets — one per data type the MCP server queries. You can ignore this page in the QuantData UI; it exists purely as a container the MCP server reads from.
-3. **Saves your config** to `~/.quantdata-mcp/config.json` so future `serve` invocations know how to authenticate.
+1. **Validates your credentials** by listing your existing QuantData pages.
+2. **Creates (or reuses) a hidden "MCP Agentic Page"** on your QuantData account. This page holds 11 chart widgets — one per data type the MCP server queries. You can ignore this page in the QuantData UI; it exists purely as a container the MCP server reads from.
+3. **Creates each tool widget** on the page (or skips ones that already exist).
+4. **Sets the page filter** to SPX for today's session.
+5. **Updates the page layout** so the tools appear as tabs in the UI.
+6. **Saves your config** to `~/.quantdata-mcp/config.json` so future `serve` invocations know how to authenticate.
 
 ### What success looks like
 
-```
-[1/3] Validating credentials...               OK
-[2/3] Creating Agentic Page...                OK
-[3/3] Creating tool widgets...                OK (11 tools)
+The setup command prints progress to stderr. A fresh run looks roughly like this (truncated for brevity):
 
-Setup complete. Config saved to ~/.quantdata-mcp/config.json
+<!-- If you change run_setup in quantdata_mcp/setup.py, update the example below to match. -->
+
 ```
+Setting up QuantData MCP...
+  Validating credentials... OK (3 pages found)
+  Creating page... OK (a1b2c3d4e5f6...)
+  Creating tool: Exposure by Strike (GEX/DEX/CEX/VEX)... OK (11ab22cd33ef...)
+  Creating tool: Net Drift... OK (...)
+  Creating tool: IV Rank... OK (...)
+  Creating tool: Contract Side Statistics... OK (...)
+  Creating tool: Max Pain... OK (...)
+  Creating tool: Net Flow... OK (...)
+  Creating tool: Order Flow (Consolidated)... OK (...)
+  Creating tool: Open Interest by Strike... OK (...)
+  Creating tool: Contract Statistics... OK (...)
+  Creating tool: Exposure by Expiration... OK (...)
+  Creating tool: Contract Price / Time... OK (...)
+  Setting page filter: SPX, 2026-05-02... OK
+  Updating page layout... OK
+
+  Config saved to ~/.quantdata-mcp/config.json
+
+==================================================
+Setup complete!
+==================================================
+```
+
+If you re-run setup with an existing local config, you'll see `Found existing config (page: ...)` near the top and `Reusing existing page: ...` instead of a fresh `Creating page...` line, with each tool reported as `already exists, skipping`.
 
 ### Troubleshooting
 
 | Failure point | Likely cause | Fix |
 |---|---|---|
-| `[1/3] Validating credentials... FAILED` | Bad/expired auth token, or the token didn't get fully copied (they're long — easy to truncate) | Re-grab the `authorization` header from DevTools and run setup again |
-| `[2/3] Creating Agentic Page... FAILED` | Subscription issue or QuantData account permissions | Confirm your subscription is active at quantdata.us; contact QuantData support if it persists |
-| `[3/3] Creating tool widgets... FAILED` | Transient API error | Just re-run the setup command — it's idempotent and will reuse the page that was already created |
+| `Validating credentials... FAILED: ...` | Bad/expired auth token, or the token didn't get fully copied (they're long — easy to truncate) | Re-grab the `authorization` header from DevTools and run setup again |
+| `Creating page... FAILED` | Subscription issue or QuantData account permissions | Confirm your subscription is active at quantdata.us; contact QuantData support if it persists |
+| `Creating tool: ... FAILED` | Transient API error | Just re-run the setup command — it's idempotent and will reuse the page and any tools that were already created |
 
-If you run setup a second time with the same `instance-id`, it'll detect the existing page and tools and skip recreation. That's exactly what you want when you're refreshing an expired token.
+Re-running setup is safe: if the local config at `~/.quantdata-mcp/config.json` already exists *and* its tool IDs still resolve on the server, setup reuses that page and only creates any tools that are missing. Otherwise it creates a fresh page. That's exactly what you want when you're refreshing an expired token.
 
 ---
 
@@ -220,8 +248,13 @@ If you already have other MCP servers in there, just add `quantdata` alongside t
 Claude Desktop on Mac doesn't always inherit your shell PATH, so it might not find `quantdata-mcp` even though it works fine in your terminal. If you see "command not found" errors in Claude Desktop's logs, find the absolute path:
 
 ```bash
+# Mac / Linux:
 which quantdata-mcp
 # /Users/you/.local/bin/quantdata-mcp
+
+# Windows (PowerShell or cmd):
+where quantdata-mcp
+# C:\Users\you\AppData\Local\Programs\Python\Python311\Scripts\quantdata-mcp.exe
 ```
 
 Then use that full path in the config:
@@ -270,8 +303,10 @@ This calls `qd_get_market_snapshot`, which fans out and pulls GEX walls, DEX wal
 
 Defaults to SPX 0DTE. You'll get something like:
 
+<!-- If you change _fmt_walls in quantdata_mcp/server.py, update the example below to match. -->
+
 ```
-Gamma Exposure (Per 1%) — SPX $5,612.40
+GEX (Gamma Exposure) — SPX $5,612.40
 
     Strike    Net ($M)   Call ($M)    Put ($M)    Type
 --------------------------------------------------------
@@ -294,6 +329,8 @@ The "Net" column shows dealer net exposure per 1% move. Big positive numbers = c
 > Pull up the order flow — just calls with premium over $50K
 
 This shows off the filter parameters. Under the hood Claude is calling `qd_get_order_flow(contract_type="CALL", min_premium=50000)`. You'll see the largest call trades hitting the tape, with side codes like `AA` (above ask, aggressive buy) and `BB` (below bid, aggressive sell).
+
+<!-- If you change _fmt_order_flow in quantdata_mcp/server.py, update the example below to match. -->
 
 ```
 Order Flow — Last 12 entries (of 4,891 total)
@@ -365,6 +402,8 @@ SPX, SPY, and QQQ have **daily** expirations, so the default behavior (expiratio
 
 Drift entries, time scrubbing (`time_minutes`), session boundaries — everything is keyed to Eastern Time. `time_minutes=570` means 9:30 AM ET (market open). `time_minutes=960` means 4:00 PM ET (close). Data is keyed by ET session date, so a query for "today" after midnight UTC but before 9:30 AM ET is asking about a session that hasn't started yet.
 
+> Note: timestamps in formatted tool output are shown in ET as of v0.2 (PR #4). Earlier versions render some columns (order flow, net flow, contract price) in UTC — if you're on an older build, mentally add/subtract the offset.
+
 ### Tokens expire
 
 When you start seeing 401 errors in Claude's tool responses, your `authorization` token has expired. Fix:
@@ -372,10 +411,10 @@ When you start seeing 401 errors in Claude's tool responses, your `authorization
 ```bash
 quantdata-mcp setup \
   --auth-token "NEW_TOKEN_FROM_DEVTOOLS" \
-  --instance-id "SAME_ID_AS_BEFORE"
+  --instance-id "YOUR_INSTANCE_ID"
 ```
 
-Use the **same** `--instance-id`. The setup command will reuse your existing page and tools — only the token changes.
+Reuse is keyed on your local config file (`~/.quantdata-mcp/config.json`), not on `--instance-id`. As long as that file exists and the tools it references still exist on the server, setup will reuse the same page and tools — only the token changes. Using a fresh `--instance-id` is fine too.
 
 ### Claude Desktop can't find `quantdata-mcp`
 
