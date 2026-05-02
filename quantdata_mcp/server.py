@@ -428,14 +428,16 @@ def _fmt_net_flow(data: dict[str, Any] | None, last_n: int = 10) -> str:
         return "No net flow data available."
 
     resp = data["response"]
-    flow_array = resp.get("netFlow", [])
+    flow_array = resp.get("netFlow")
+    if flow_array is None:
+        return f"No net flow data — unexpected response shape. Available keys: {list(resp.keys())}"
     if not flow_array:
         return "No net flow entries."
 
     entries = flow_array[-last_n:]
+    et = ZoneInfo("America/New_York")
 
-    lines = [f"Net Flow — Last {len(entries)} entries", ""]
-
+    rendered: list[str] = []
     for entry in entries:
         # Defensive: skip rows that don't match the documented 4-item shape
         if not isinstance(entry, (list, tuple)) or len(entry) < 4:
@@ -445,12 +447,15 @@ def _fmt_net_flow(data: dict[str, Any] | None, last_n: int = 10) -> str:
         put_flow = put_cents / 100
         net = call_flow - put_flow
         try:
-            t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+            t = datetime.fromtimestamp(ts / 1000, tz=et).strftime("%H:%M:%S")
         except (OSError, ValueError):
             t = str(ts)
-        lines.append(
+        rendered.append(
             f"  {t}  Call: ${call_flow:>+10,.0f}  Put: ${put_flow:>+10,.0f}  Net: ${net:>+10,.0f}"
         )
+
+    lines = [f"Net Flow — Last {len(rendered)} entries (Time ET)", ""]
+    lines.extend(rendered)
 
     return "\n".join(lines)
 
@@ -592,17 +597,15 @@ def _fmt_contract_price(data: dict[str, Any] | None) -> str:
         return "No contract price data available."
 
     resp = data["response"]
-    price_data = resp.get("optionPriceOverTime", [])
+    price_data = resp.get("optionPriceOverTime")
 
+    if price_data is None:
+        return f"No contract price data — unexpected response shape. Available keys: {list(resp.keys())}"
     if not price_data:
         return "No contract price entries."
 
-    lines = ["Contract Price (OHLCV)", ""]
-    lines.append(
-        f"{'Time':>12}  {'Open':>10}  {'High':>10}  {'Low':>10}  {'Close':>10}  {'Volume':>10}"
-    )
-    lines.append("-" * 72)
-
+    et = ZoneInfo("America/New_York")
+    rendered: list[str] = []
     for entry in price_data:
         # Defensive: skip rows that don't match the documented OHLCV shape
         if not isinstance(entry, (list, tuple)) or len(entry) < 6:
@@ -614,12 +617,19 @@ def _fmt_contract_price(data: dict[str, Any] | None) -> str:
         cl = (entry[4] or 0) / 100
         vol = entry[5] or 0
         try:
-            t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+            t = datetime.fromtimestamp(ts / 1000, tz=et).strftime("%H:%M:%S")
         except (OSError, ValueError):
             t = str(ts)
-        lines.append(
+        rendered.append(
             f"{t:>12}  ${o:>9.2f}  ${h:>9.2f}  ${lo:>9.2f}  ${cl:>9.2f}  {vol:>10,}"
         )
+
+    lines = ["Contract Price (OHLCV)", ""]
+    lines.append(
+        f"{'Time (ET)':>12}  {'Open':>10}  {'High':>10}  {'Low':>10}  {'Close':>10}  {'Volume':>10}"
+    )
+    lines.append("-" * 72)
+    lines.extend(rendered)
 
     return "\n".join(lines)
 
@@ -646,40 +656,45 @@ def _fmt_order_flow(data: dict[str, Any] | None, last_n: int = 20) -> str:
         return "No order flow data available."
 
     resp = data["response"]
-    trades = resp.get("trades", [])
+    trades = resp.get("trades")
 
+    if trades is None:
+        return f"No order flow data — unexpected response shape. Available keys: {list(resp.keys())}"
     if not trades:
         return "No order flow entries."
 
     entries = trades[-last_n:] if len(trades) > last_n else trades
+    et = ZoneInfo("America/New_York")
 
-    lines = [f"Order Flow — Last {len(entries)} entries (of {len(trades)} total)", ""]
-    lines.append(
-        f"{'Time':>12}  {'Ticker':>6}  {'Strike':>10}  {'Type':>4}  {'Side':>4}  "
-        f"{'Premium':>12}  {'Size':>8}  {'Sentiment':>10}"
-    )
-    lines.append("-" * 82)
-
+    rendered: list[str] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         ts = entry.get("tradeTime", 0)
         tkr = entry.get("ticker", "")
-        strike = entry.get("strikePriceInCents", 0) / 100
+        strike = (entry.get("strikePriceInCents") or 0) / 100
         ct = entry.get("contractType", "")
         side = entry.get("tradeSideCode", "")
-        prem = entry.get("premiumInCents", 0) / 100
+        prem = (entry.get("premiumInCents") or 0) / 100
         size = entry.get("size", 0)
         sent = entry.get("sentimentType", "")
         try:
-            t = datetime.fromtimestamp(ts / 1000, tz=UTC).strftime("%H:%M:%S")
+            t = datetime.fromtimestamp(ts / 1000, tz=et).strftime("%H:%M:%S")
         except (OSError, ValueError, TypeError):
             t = str(ts)
         ct_short = "C" if ct == "CALL" else "P" if ct == "PUT" else str(ct)
-        lines.append(
+        rendered.append(
             f"{t:>12}  {str(tkr):>6}  ${strike:>8,.0f}  {ct_short:>4}  {str(side):>4}  "
             f"${prem:>10,.0f}  {size:>8,}  {str(sent):>10}"
         )
+
+    lines = [f"Order Flow — Last {len(rendered)} entries (of {len(trades)} total)", ""]
+    lines.append(
+        f"{'Time (ET)':>12}  {'Ticker':>6}  {'Strike':>10}  {'Type':>4}  {'Side':>4}  "
+        f"{'Premium':>12}  {'Size':>8}  {'Sentiment':>10}"
+    )
+    lines.append("-" * 82)
+    lines.extend(rendered)
 
     return "\n".join(lines)
 
