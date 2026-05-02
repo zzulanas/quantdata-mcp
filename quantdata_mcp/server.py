@@ -11,9 +11,10 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone, timedelta
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from mcp.server.fastmcp import FastMCP
 
@@ -71,7 +72,9 @@ def _load() -> tuple[QuantDataClient, Config, dict[str, ToolSpec]]:
     if _client is None:
         if not config_exists():
             raise RuntimeError(
-                "Not configured yet. Please call the qd_login tool first to open a browser and log in to QuantData."
+                "Not configured yet. Please run "
+                "`quantdata-mcp setup --auth-token <TOKEN> --instance-id <INSTANCE_ID>` "
+                "before starting the server (see README for credential lookup)."
             )
         _config = load_config()
         _specs = build_tool_specs(_config.tools)
@@ -102,7 +105,7 @@ def _get_specs() -> dict[str, ToolSpec]:
 
 def _today() -> str:
     """Return today's date in YYYY-MM-DD (Eastern Time, since market data is keyed by ET)."""
-    et = timezone(timedelta(hours=-4))  # EDT (summer); close enough for date boundary
+    et = ZoneInfo("America/New_York")
     return datetime.now(et).strftime("%Y-%m-%d")
 
 
@@ -250,12 +253,13 @@ def _fmt_drift(data: dict[str, Any] | None, last_n: int = 10) -> str:
     if not drift_array:
         return "No net drift entries."
 
-    # Filter to regular market session only (9:30 AM ET = 13:30 UTC).
+    # Filter to regular market session only (9:30 AM ET).
     # The API returns data from overnight/pre-market which skews the cumulative.
-    et = timezone(timedelta(hours=-4))  # EDT
-    today_utc = datetime.now(UTC).date()
+    # Use ZoneInfo so DST transitions are handled correctly (EDT vs EST).
+    et = ZoneInfo("America/New_York")
+    today_et = datetime.now(et).date()
     market_open_ms = int(
-        datetime(today_utc.year, today_utc.month, today_utc.day, 13, 30, 0, tzinfo=UTC).timestamp() * 1000
+        datetime(today_et.year, today_et.month, today_et.day, 9, 30, 0, tzinfo=et).timestamp() * 1000
     )
     session_entries = [t for t in drift_array if t[0] >= market_open_ms]
     if not session_entries:
