@@ -273,11 +273,41 @@ When you discover a shape change, document it in your PR — it helps future deb
 
 ## Releasing
 
-Maintainers only:
+Maintainers only. There is no CI — releases are built and published manually
+from a clean checkout of `main`.
 
-1. Bump `__version__` in `quantdata_mcp/__init__.py` and `version` in `pyproject.toml`.
-2. Tag the commit: `git tag vX.Y.Z && git push --tags`.
-3. Users install with `uv pip install git+https://github.com/zzulanas/quantdata-mcp.git@vX.Y.Z`.
+```bash
+# 1. Bump version in pyproject.toml AND quantdata_mcp/__init__.py.
+#    (tests/test_packaging.py asserts the two stay in sync.)
+# 2. Update release notes (write release-notes.md or use the GitHub UI).
+
+# 3. Commit + tag
+git commit -am "release: vX.Y.Z"
+git tag vX.Y.Z
+git push && git push --tags
+
+# 4. Build distribution artifacts (sdist + wheel)
+uv pip install --upgrade build twine
+python -m build  # produces dist/quantdata_mcp-X.Y.Z.tar.gz + .whl
+
+# 5. Verify the artifacts before uploading
+twine check dist/*
+
+# 6. Publish to PyPI
+twine upload dist/*
+
+# 7. Create the GitHub release from the tag and attach the built artifacts
+gh release create vX.Y.Z dist/* --notes-file release-notes.md
+```
+
+After publishing, users can install with:
+
+```bash
+pip install quantdata-mcp           # PyPI
+uv pip install quantdata-mcp        # PyPI via uv
+# or pin a specific git tag:
+uv pip install git+https://github.com/zzulanas/quantdata-mcp.git@vX.Y.Z
+```
 
 ---
 
