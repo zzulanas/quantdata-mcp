@@ -4,6 +4,8 @@
 
 MCP server that gives AI agents (Claude Code, Claude Desktop, etc.) access to real-time and historical options market data from [QuantData](https://quantdata.us).
 
+> 📖 New to this? Start with the [Getting Started Guide](GETTING_STARTED.md) for a step-by-step walkthrough.
+
 **Supports any optionable ticker** — SPX, SPY, QQQ, AAPL, TSLA, and more. Not just 0DTE.
 
 **Available data:** GEX/DEX/CEX/VEX exposure walls, exposure term structure, net drift, max pain, IV rank, trade side statistics, open interest, net flow, consolidated order flow, contract OHLCV, and contract statistics.
