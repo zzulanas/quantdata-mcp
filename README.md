@@ -2,7 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![PyPI: coming soon](https://img.shields.io/badge/PyPI-coming%20soon-lightgrey.svg)](https://github.com/zzulanas/quantdata-mcp)
+[![PyPI version](https://img.shields.io/pypi/v/quantdata-mcp.svg)](https://pypi.org/project/quantdata-mcp/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/quantdata-mcp.svg)](https://pypi.org/project/quantdata-mcp/)
 
 ## THIS IS AN UNOFFICIAL MCP SERVER I AM NOT AFFILIATED WITH QUANTDATA IN ANY WAY
 
@@ -25,19 +26,22 @@ You need **Python 3.11+** installed. Check with `python3 --version`.
 - **Mac:** `brew install python` (or download from [python.org](https://www.python.org/downloads/))
 - **Windows:** Download from [python.org](https://www.python.org/downloads/) (check "Add to PATH" during install)
 
-Then install the package directly from GitHub (recommended today):
+Install from PyPI:
 
 ```bash
 # With pip
-pip install git+https://github.com/zzulanas/quantdata-mcp.git
+pip install quantdata-mcp
 
 # With uv (faster)
-uv pip install git+https://github.com/zzulanas/quantdata-mcp.git
+uv pip install quantdata-mcp
+
+# Or install as a global tool with uv
+uv tool install quantdata-mcp
 ```
 
 > **Don't have uv?** Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh` (Mac/Linux) or `irm https://astral.sh/uv/install.ps1 | iex` (Windows). It's a faster alternative to pip.
 
-> **PyPI:** once published, `pip install quantdata-mcp` (or `uv pip install quantdata-mcp`) will work out of the box. Until then, use the GitHub install above.
+> **Want the bleeding edge?** Install from GitHub: `pip install git+https://github.com/zzulanas/quantdata-mcp.git`
 
 ### 2. Get Your Credentials
 
