@@ -58,6 +58,48 @@ AUTH_ERROR_MESSAGE = (
 )
 
 
+# Module-level cache of the "active" page state. Updated whenever the user
+# explicitly sets a page (via ``qd_set_page_date``) or implicitly sets one
+# (via a ``qd_get_*`` call with explicit ticker/date args). When a tool call
+# is made WITHOUT explicit ticker/date args, ``tool_context`` resolves the
+# missing pieces from this cache instead of falling back to "today/SPX" ---
+# so context sticks across calls.
+_active_page: dict[str, str | None] = {
+    "session_date": None,
+    "ticker": None,
+    "expiration_date": None,
+}
+
+
+def get_active_page() -> dict[str, str | None]:
+    """Return a snapshot of the active page state. Used by tests / introspection."""
+    return dict(_active_page)
+
+
+def update_active_page(
+    *,
+    session_date: str | None = None,
+    ticker: str | None = None,
+    expiration_date: str | None = None,
+) -> None:
+    """Update the cached active page state. Only non-None args overwrite —
+    pass ``None`` to keep the existing cached value for that field.
+    """
+    if session_date is not None:
+        _active_page["session_date"] = session_date
+    if ticker is not None:
+        _active_page["ticker"] = ticker
+    if expiration_date is not None:
+        _active_page["expiration_date"] = expiration_date
+
+
+def clear_active_page() -> None:
+    """Reset the cache. Used by tests for isolation."""
+    _active_page["session_date"] = None
+    _active_page["ticker"] = None
+    _active_page["expiration_date"] = None
+
+
 def _today() -> str:
     """Return today's date in YYYY-MM-DD (Eastern Time, since market data is keyed by ET)."""
     et = timezone(timedelta(hours=-4))  # EDT (summer); close enough for date boundary
@@ -129,7 +171,7 @@ class ToolContext:
 def tool_context(
     tool_name: str,
     *,
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     metadata_updates: dict[str, Any] | None = None,
@@ -171,9 +213,15 @@ def tool_context(
 
     Args:
         tool_name: Key in the spec registry (e.g. ``"net_drift"``).
-        ticker: Ticker for the page filter.
-        date: Session date (``YYYY-MM-DD``); defaults to today (ET).
-        expiration_date: Expiration date; defaults to ``date`` (0DTE).
+        ticker: Ticker for the page filter. ``None`` (default) inherits the
+            cached active page from a prior ``qd_set_page_date`` or tool call;
+            falls through to ``"SPX"`` only when the cache is empty.
+        date: Session date (``YYYY-MM-DD``). ``None`` (default) inherits the
+            cached active page; falls through to today (ET) only when the
+            cache is empty.
+        expiration_date: Expiration date. ``None`` (default) inherits the
+            cached active page; falls through to ``date`` (0DTE) when neither
+            cache nor caller specified a value.
         metadata_updates: Top-level metadata fields to set on the tool
             (e.g. ``{"greekModeType": "DELTA"}``). Pass ``None`` to skip.
         filter_updates: Filter dict updates merged into ``metadata.filter``.
@@ -203,7 +251,11 @@ def tool_context(
         if get_page_id is None:
             get_page_id = _srv._get_page_id
 
-    session_date = date or _today()
+    # Resolve None args from the cached active page; only fall through to
+    # hardcoded defaults when both the caller and the cache are empty.
+    session_date = date or _active_page.get("session_date") or _today()
+    resolved_ticker: str = ticker or _active_page.get("ticker") or "SPX"
+    resolved_expiration = expiration_date or _active_page.get("expiration_date")
 
     with _mutation_lock:
         client: QuantDataClient = get_client()
@@ -214,8 +266,14 @@ def tool_context(
             client.set_page_filter(
                 get_page_id(),
                 session_date=session_date,
-                ticker=ticker,
-                expiration_date=expiration_date,
+                ticker=resolved_ticker,
+                expiration_date=resolved_expiration,
+            )
+            # Persist this as the active page so subsequent calls inherit.
+            update_active_page(
+                session_date=session_date,
+                ticker=resolved_ticker,
+                expiration_date=resolved_expiration,
             )
 
         snapshot_metadata: dict[str, Any] | None = None
@@ -284,13 +342,16 @@ def tool_context(
                 client=client,
                 tool_spec=spec,
                 tool_dto=tool_dto,
-                ticker=ticker,
+                ticker=resolved_ticker,
                 date=session_date,
-                expiration_date=expiration_date,
+                expiration_date=resolved_expiration,
             )
         finally:
-            # 4. Restore snapshotted metadata via a single PUT (fresh payload).
-            # This also drops ``numberOfMinutesIntoMarketOpen`` if we set it.
+            # 4. Restore snapshotted tool metadata via a single PUT (fresh
+            # payload). This also drops ``numberOfMinutesIntoMarketOpen`` if
+            # we set it as a transient time scrubber for this call —
+            # PERSISTENT scrubbers set via ``client.set_tool_time`` are
+            # preserved because the snapshot was taken AFTER they landed.
             if needs_tool and snapshot_metadata is not None:
                 try:
                     restore_payload = dict(tool_dto_scaffold)
@@ -304,37 +365,37 @@ def tool_context(
                 except Exception:  # pragma: no cover - best effort
                     pass
 
-            # 5. Restore page filter to today/SPX if we changed away from
-            # defaults (and we own the page filter for this scope).
-            if not skip_page_filter:
-                today = _today()
-                if session_date != today or ticker != "SPX":
-                    try:
-                        client.set_page_filter(
-                            get_page_id(), session_date=today, ticker="SPX"
-                        )
-                    except Exception:  # pragma: no cover - best effort
-                        pass
+            # NOTE: previously this block also reset the PAGE filter back to
+            # today/SPX. We deliberately don't do that anymore — the page
+            # filter is now sticky across calls so the user can keep their
+            # context (ticker / date / expiration) across many tool calls
+            # and watch the QuantData browser stay in sync. To return to
+            # today's session, callers explicitly pass ``date=today,
+            # ticker="SPX"`` or call ``qd_set_page_date(...)``.
 
 
 @contextmanager
 def page_filter_context(
     *,
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     get_client: Any = None,
     get_page_id: Any = None,
 ) -> Iterator[None]:
-    """Apply + restore the page filter ONCE around a block of inner fetches.
+    """Apply the page filter ONCE around a block of inner fetches.
 
     Use this to wrap a batch of ``tool_context(..., skip_page_filter=True)``
-    calls so the page-filter PUT happens exactly twice (apply + restore)
-    instead of once per inner call. ``qd_get_market_snapshot`` uses this to
-    keep its 6 section fetches under one shared page filter.
+    calls so the page-filter PUT happens exactly once instead of once per
+    inner call. ``qd_get_market_snapshot`` uses this to keep its 6 section
+    fetches under one shared page filter.
 
     Acquires the same module-level mutation lock as ``tool_context`` so the
-    apply + entire batch + restore is atomic relative to other tool calls.
+    apply + entire batch is atomic relative to other tool calls.
+
+    None args inherit from the cached active page (same resolution rules as
+    :func:`tool_context`). After the block finishes the page filter stays
+    where it was set — sticky across calls.
     """
     if get_client is None or get_page_id is None:
         from quantdata_mcp import server as _srv
@@ -344,27 +405,24 @@ def page_filter_context(
         if get_page_id is None:
             get_page_id = _srv._get_page_id
 
-    session_date = date or _today()
+    session_date = date or _active_page.get("session_date") or _today()
+    resolved_ticker: str = ticker or _active_page.get("ticker") or "SPX"
+    resolved_expiration = expiration_date or _active_page.get("expiration_date")
 
     with _mutation_lock:
         client: QuantDataClient = get_client()
         client.set_page_filter(
             get_page_id(),
             session_date=session_date,
-            ticker=ticker,
-            expiration_date=expiration_date,
+            ticker=resolved_ticker,
+            expiration_date=resolved_expiration,
         )
-        try:
-            yield
-        finally:
-            today = _today()
-            if session_date != today or ticker != "SPX":
-                try:
-                    client.set_page_filter(
-                        get_page_id(), session_date=today, ticker="SPX"
-                    )
-                except Exception:  # pragma: no cover - best effort
-                    pass
+        update_active_page(
+            session_date=session_date,
+            ticker=resolved_ticker,
+            expiration_date=resolved_expiration,
+        )
+        yield
 
 
 def format_error(operation: str, exc: BaseException) -> str:

@@ -18,28 +18,32 @@ from quantdata_mcp import server
 from quantdata_mcp._context import page_filter_context, tool_context
 
 
-def test_market_snapshot_makes_only_two_page_filter_puts(
+def test_market_snapshot_makes_only_one_page_filter_put(
     mock_client, mock_specs
 ) -> None:
-    """``qd_get_market_snapshot`` should call ``set_page_filter`` exactly twice.
+    """``qd_get_market_snapshot`` should call ``set_page_filter`` exactly once.
 
-    Once on enter (apply the requested AAPL filter), once on exit (restore
-    SPX/today). NOT 12 (= 6 sections * 2 inner applies+restores) -- that was
-    the regression the staff review flagged.
+    One apply on entry covering all six section fetches under a single
+    ``page_filter_context``. PR 15 dropped the auto-restore-on-exit so the
+    page filter is sticky and the count is now 1, not 2.
     """
+    from quantdata_mcp._context import clear_active_page
+
+    clear_active_page()
     with patch.object(server, "_get_client", lambda: mock_client), patch.object(
         server, "_get_specs", lambda: mock_specs
     ), patch.object(server, "_get_page_id", lambda: "page-abc"):
         server.qd_get_market_snapshot(
-            ticker="AAPL",                    # non-default -> triggers restore
+            ticker="AAPL",
             date="2025-01-15",
             expiration_date="2025-01-17",
         )
 
-    assert mock_client.set_page_filter.call_count == 2, (
-        f"Expected 2 page-filter PUTs (apply + restore) for the whole "
-        f"snapshot, got {mock_client.set_page_filter.call_count}. The six "
-        f"inner tool_context blocks must share a single page_filter_context."
+    assert mock_client.set_page_filter.call_count == 1, (
+        f"Expected 1 page-filter PUT (apply on entry, no restore on exit) for "
+        f"the whole snapshot, got {mock_client.set_page_filter.call_count}. "
+        f"The six inner tool_context blocks must share a single "
+        f"page_filter_context, and PR 15 removed the exit-restore."
     )
 
 
@@ -60,11 +64,15 @@ def test_skip_page_filter_does_not_call_set_page_filter(
     assert mock_client.set_page_filter.call_count == 0
 
 
-def test_page_filter_context_applies_and_restores(
+def test_page_filter_context_applies_once_and_sticks(
     mock_client, context_kwargs
 ) -> None:
-    """``page_filter_context`` applies on enter, restores on exit (when changed)."""
-    # Drop the keys page_filter_context doesn't take.
+    """``page_filter_context`` applies on enter and the filter persists after
+    the block exits — the page-filter is sticky as of PR 15.
+    """
+    from quantdata_mcp._context import clear_active_page
+
+    clear_active_page()
     pf_kwargs = {
         "get_client": context_kwargs["get_client"],
         "get_page_id": context_kwargs["get_page_id"],
@@ -73,19 +81,22 @@ def test_page_filter_context_applies_and_restores(
     with page_filter_context(ticker="AAPL", date="2025-01-15", **pf_kwargs):
         pass
 
-    assert mock_client.set_page_filter.call_count == 2
+    assert mock_client.set_page_filter.call_count == 1
     apply_call = mock_client.set_page_filter.call_args_list[0]
-    restore_call = mock_client.set_page_filter.call_args_list[1]
     assert apply_call.kwargs["ticker"] == "AAPL"
-    assert restore_call.kwargs["ticker"] == "SPX"
+    assert apply_call.kwargs["session_date"] == "2025-01-15"
 
 
 def test_page_filter_context_with_inner_tool_contexts(
     mock_client, context_kwargs
 ) -> None:
     """An outer ``page_filter_context`` plus N inner ``tool_context`` calls
-    with ``skip_page_filter=True`` produces exactly 2 page-filter PUTs total.
+    with ``skip_page_filter=True`` produces exactly 1 page-filter PUT total
+    (one apply on entry; no restore on exit per PR 15's sticky semantics).
     """
+    from quantdata_mcp._context import clear_active_page
+
+    clear_active_page()
     pf_kwargs = {
         "get_client": context_kwargs["get_client"],
         "get_page_id": context_kwargs["get_page_id"],
@@ -103,8 +114,8 @@ def test_page_filter_context_with_inner_tool_contexts(
             ):
                 pass
 
-    # Exactly 2 page-filter PUTs even though 3 inner tool_contexts ran.
-    assert mock_client.set_page_filter.call_count == 2
+    # Exactly 1 page-filter PUT — the sticky-page-filter contract.
+    assert mock_client.set_page_filter.call_count == 1
 
     # Each inner tool_context still does its 1 GET + 2 PUTs.
     assert mock_client.get_tool.call_count == 3
@@ -112,4 +123,4 @@ def test_page_filter_context_with_inner_tool_contexts(
         c for c in mock_client._make_request.call_args_list
         if c.args[0] == "PUT" and c.args[1] == "tool"
     ]
-    assert len(put_tool_calls) == 6  # 3 applies + 3 restores
+    assert len(put_tool_calls) == 6  # 3 applies + 3 restores (tool-level only)
