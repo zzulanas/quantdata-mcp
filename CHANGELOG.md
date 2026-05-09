@@ -2,6 +2,52 @@
 
 All notable changes to `quantdata-mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-09
+
+Rounds out the canonical tool surface with 7 broader-market-context
+tools that complement the per-options-tool surface — heat maps for
+"where's the heat right now", news for narrative context, gainers/losers
+for cross-market sentiment scans, dark pool / equity prints for
+underlier-side flow, stock OHLC for spot context, and interval map for
+intraday greek dynamics.
+
+### Added — 7 new MCP tools
+
+| Tool | What |
+|---|---|
+| `qd_get_heat_map(ticker, date, expiration_date, data_mode, top_n)` | Top cells (strike × expiration) by abs value. Trims the 3.4 MB raw payload to the heaviest concentrations. |
+| `qd_get_interval_map(ticker, date, expiration_date, greek_type, aggregation, padding_strikes, top_n)` | Top time buckets sorted by total \|greek\|; each bucket lists its top strikes. |
+| `qd_get_news_articles(tickers, sentiment, topics, title_contains, body_contains, last_n)` | Article listing with full-text CONTAINS search on title/body. Uses the `NEWS_ARTICLES` filter-group field set. |
+| `qd_get_gainers_losers(watchlist, sectors, industries, top_n)` | Per-ticker bullish + bearish premium leaders. The new `watchlist` param sets a multi-ticker page filter so you can scan across e.g. Mag 7 + ETFs in one call. |
+| `qd_get_dark_pool_levels(ticker, max_levels, top_n)` | Price levels with dark-pool size, sorted by size DESC. |
+| `qd_get_equity_prints(ticker, min_size, min_notional, trade_side, last_n)` | Equity-side tape (every print on the underlier). |
+| `qd_get_stock_price_time(ticker, aggregation, chart_type, last_n)` | Underlying-stock OHLC over time. |
+
+### Added — under the hood
+
+- 7 new `ToolType` enum entries + `ToolDefinition` entries in `tools.py`
+- 7 new `fetch_*` methods on `QuantDataClient`
+- `_resolve_active_ticker()` helper for tools whose `metadata.filter.ticker` must be synced to the active page (5 of the 7 new tools fall in this category)
+- `client.set_page_filter()` now accepts either a single string ticker or a list of tickers (used by `qd_get_gainers_losers`'s watchlist param)
+- 7 new sanitised JSON fixtures captured from the live API
+
+### Tested
+
+- 268 tests passing (252 + 16 new)
+- All 7 tools live-verified end-to-end against the live QuantData API:
+  - Heat map: SPX cells show $16.9B at $7,390 (real dealer concentration)
+  - Interval map: closing-rotation gamma spike captured in top buckets
+  - News: SPX-tagged Benzinga articles with topics + links
+  - Gainers/losers (watchlist): Mag-7 + ETFs scan returns all 8 ranked
+  - Dark pool: SPY shows $2.9B notional block at $731.48
+  - Equity prints: SPY shows $724M of after-hours AA-side blocks
+  - Stock OHLC: 1,016 SPY bars rendered, most-recent first
+
+### Notes for upgraders
+
+- Just upgrade the package. PR 9's auto-register kicks in for the 7 new tool definitions on first server start — no setup re-run required.
+- `qd_get_gainers_losers` is per-page-ticker by default. To get the market-scan view (multi-ticker leaderboard), pass `watchlist=["TICKER1", "TICKER2", ...]`.
+
 ## [0.3.0] — 2026-05-09
 
 A "full-UI-parity" release. The MCP can now drive almost every primitive
@@ -73,5 +119,6 @@ Same filter set is mirrored on `qd_get_unconsolidated_flow` (minus `is_golden_sw
 
 First public PyPI release. See git history for details.
 
+[0.4.0]: https://github.com/zzulanas/quantdata-mcp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/zzulanas/quantdata-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/zzulanas/quantdata-mcp/releases/tag/v0.2.0
