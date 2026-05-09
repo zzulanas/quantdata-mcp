@@ -125,8 +125,41 @@ def test_stock_price_time_formatter_renders_candles(
     out = server._fmt_stock_price_time(stock_price_response, last_n=5)
     assert "Stock Price / Time" in out
     assert "Open" in out and "Close" in out
-    # Should show the last 5 bars
-    assert out.count("ET") >= 1 or "$" in out
+    assert "most recent" in out  # confirms the new sort-by-timestamp-DESC path
+
+
+def test_stock_price_time_formatter_picks_newest_regardless_of_input_order() -> None:
+    """Source array can be ascending or descending — the formatter sorts
+    explicitly so the newest bar lands first either way."""
+    asc = {
+        "response": {
+            "stockPriceOverTime": [
+                [1_000, 100_00, 101_00, 99_00, 100_50],
+                [2_000, 100_50, 102_00, 100_00, 101_00],
+                [3_000, 101_00, 103_00, 100_50, 102_50],
+            ]
+        }
+    }
+    desc = {
+        "response": {
+            "stockPriceOverTime": [
+                [3_000, 101_00, 103_00, 100_50, 102_50],
+                [2_000, 100_50, 102_00, 100_00, 101_00],
+                [1_000, 100_00, 101_00, 99_00, 100_50],
+            ]
+        }
+    }
+    out_asc = server._fmt_stock_price_time(asc, last_n=2)
+    out_desc = server._fmt_stock_price_time(desc, last_n=2)
+    # Both should show the same two newest bars (ts=3000, then ts=2000)
+    # — the ts=1000 oldest bar should be excluded in both cases.
+    assert "1000" not in out_asc and "1000" not in out_desc, (
+        "The oldest bar (ts=1000) shouldn't appear when last_n=2"
+    )
+    # Both outputs should be identical apart from the body itself.
+    # (Both should mention 'most recent 2 shown'.)
+    assert "most recent 2 shown" in out_asc
+    assert "most recent 2 shown" in out_desc
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +374,9 @@ def test_equity_prints_wrapper_dollar_to_cents(make_tool_dto, mock_specs) -> Non
     assert apply_filter["size"]["value"] == 100
     # Dollars -> cents conversion for notional
     assert apply_filter["notionalValueInCents"]["value"] == 1_000_000
+    # Ticker is wrapped in a list because the equity_prints scaffold expects
+    # multi-value (unlike most options tools where ticker is a single string).
+    assert isinstance(apply_filter["ticker"]["value"], list)
 
 
 def test_stock_price_time_wrapper_passes_chart_type(

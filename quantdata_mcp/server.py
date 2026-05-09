@@ -2587,10 +2587,15 @@ def _fmt_stock_price_time(data: dict[str, Any] | None, last_n: int = 15) -> str:
     if not series:
         return "Stock price/time: empty series."
     et = ZoneInfo("America/New_York")
-    # Each row is typically [ts_ms, open, high, low, close, volume?]
-    rows = series[-last_n:]
+    # Each row is typically [ts_ms, open, high, low, close, volume?].
+    # Sort by timestamp DESC so the newest bar lands first regardless of
+    # the source-array ordering (the QuantData API has been observed to
+    # return both ascending and descending under different conditions).
+    valid_rows = [r for r in series if isinstance(r, list) and len(r) >= 5]
+    valid_rows.sort(key=lambda r: r[0], reverse=True)
+    rows = valid_rows[:last_n]
     lines = [
-        f"Stock Price / Time — {len(series)} bars, last {len(rows)} shown",
+        f"Stock Price / Time — {len(series)} bars, most recent {len(rows)} shown",
         "",
         f"  {'Time (ET)':>16s}  {'Open':>10s}  {'High':>10s}  {'Low':>10s}  {'Close':>10s}",
         "  " + "-" * 65,
@@ -2828,8 +2833,11 @@ def qd_get_equity_prints(
     """
     resolved_ticker = _resolve_active_ticker(ticker)
     try:
+        # NOTE: equity_prints expects ``ticker`` as a LIST (multi-value),
+        # unlike most options tools where ``ticker`` is a single string.
+        # This shape difference matches the live filter scaffold.
         filter_updates: dict[str, dict[str, Any] | None] = {
-            "ticker": _eq(resolved_ticker),
+            "ticker": _eq([resolved_ticker]),
             "size": _gte(min_size) if min_size is not None else None,
             "notionalValueInCents": (
                 _gte(int(min_notional * 100)) if min_notional is not None else None
