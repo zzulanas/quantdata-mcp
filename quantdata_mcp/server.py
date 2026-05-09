@@ -3952,6 +3952,355 @@ def qd_reset_to_live(tool_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# v0.5.0 — User-managed pages: named workspaces with their own page filter
+# and tool subset, parallel to the canonical MCP Agentic Page. Each page
+# returns a browser URL the user can open alongside the LLM session for
+# the same browser-LLM symbiosis we already have on the canonical surface.
+# ---------------------------------------------------------------------------
+
+
+def _save_managed_page_config() -> None:
+    """Persist the in-memory ``Config`` (with updated ``pages``) to disk.
+
+    Wraps ``save_config`` with the lazy-loaded module config. Called by
+    every page-mutating MCP tool after a successful API write so the
+    on-disk state stays in sync with the QuantData backend.
+    """
+    if _config is None:
+        raise RuntimeError("Config not loaded — call _load() first")
+    save_config(_config)
+
+
+@mcp.tool()
+def qd_create_page(
+    name: str,
+    label: str = "",
+    ticker: str | None = None,
+    date: str | None = None,
+    expiration_date: str | None = None,
+) -> str:
+    """Create a new user-managed page (workspace) and return its browser URL.
+
+    A page is a named QuantData workspace separate from the canonical MCP
+    Agentic Page. It has its own page filter, its own tool instances, and
+    a URL the user can open in their QuantData browser. ``qd_run_page``
+    iterates the page's tools in one batch.
+
+    Use cases:
+        - "Set up a TSLA earnings workspace" → create a page filtered to
+          TSLA on the earnings session, add the tools you care about, open
+          the URL alongside the LLM session.
+        - "Make me a Mag-7 daily watch" → create a page, attach it to a
+          watchlist filter group, add Net Drift / Order Flow / IV Rank.
+
+    Args:
+        name: Short identifier (snake_case, alphanumeric + underscore,
+            max 64 chars). Used as the lookup key for ``qd_run_page`` etc.
+        label: Human-readable display name shown in the QuantData web UI
+            tab. Defaults to ``name`` if empty.
+        ticker: Initial page filter ticker (e.g. ``"TSLA"``).
+        date: Initial page filter session date YYYY-MM-DD.
+        expiration_date: Initial page filter expiration date YYYY-MM-DD.
+            Defaults to ``date`` (0DTE) when not specified.
+    """
+    from quantdata_mcp import pages as _pages
+
+    if not _pages.is_valid_page_name(name):
+        return (
+            f"Invalid page name {name!r}. Use lowercase alphanumeric + "
+            f"underscore, 1-64 chars (matches /^[a-z0-9_]+$/)."
+        )
+    client, cfg, _ = _load()
+    if _pages.find_page(cfg, name) is not None:
+        return f"Page {name!r} already exists. Pick a different name or qd_delete_page first."
+
+    display_label = label or name
+    try:
+        page = client.create_page(
+            name=display_label,
+            description=f"Created via MCP on {datetime.now(UTC).strftime('%Y-%m-%d')}",
+        )
+        if not page:
+            return "Failed to create page (see server logs)."
+        page_id = page.get("id", "")
+        if not page_id:
+            return "Page created but no ID returned."
+
+        # Set initial page filter if any of ticker/date/expiration was supplied.
+        if ticker or date:
+            session_date = date or _today()
+            client.set_page_filter(
+                page_id,
+                session_date=session_date,
+                ticker=ticker or "SPX",
+                expiration_date=expiration_date,
+            )
+
+        # Persist the new page record.
+        record = _pages.make_page_record(
+            name=name,
+            label=display_label,
+            page_id=page_id,
+            ticker=ticker,
+            session_date=date,
+            expiration_date=expiration_date,
+        )
+        cfg.pages.append(record)
+        _save_managed_page_config()
+
+        return (
+            f"Created page {name!r} ({page_id[:8]}…).\n"
+            f"URL: {record['url']}\n"
+            "Add tools with qd_add_tool_to_page; run all tools with qd_run_page."
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"create_page({name!r})", e)
+
+
+@mcp.tool()
+def qd_list_pages() -> str:
+    """List the user-managed pages saved to the MCP config.
+
+    Each page shows its name, label, browser URL, page filter, and the
+    tool instances attached to it.
+    """
+    try:
+        _, cfg, _ = _load()
+        if not cfg.pages:
+            return (
+                "No user-managed pages yet. Use qd_create_page to make one."
+            )
+        lines = [f"User-managed pages ({len(cfg.pages)}):", ""]
+        for page in cfg.pages:
+            f = page.get("filter") or {}
+            tickers = f.get("ticker") or "(any)"
+            session = f.get("session_date") or "(today)"
+            lines.append(
+                f"  📂 {page.get('name', '?'):20s}  {page.get('label', '')!r}"
+            )
+            lines.append(f"     URL:    {page.get('url', '?')}")
+            lines.append(f"     filter: ticker={tickers}, date={session}")
+            tool_records = page.get("tools") or []
+            if tool_records:
+                names = ", ".join(t.get("canonical_name", "?") for t in tool_records)
+                lines.append(f"     tools:  {names}")
+            else:
+                lines.append("     tools:  (none — qd_add_tool_to_page to add)")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("list_pages", e)
+
+
+@mcp.tool()
+def qd_add_tool_to_page(page_name: str, tool_canonical_name: str) -> str:
+    """Add a tool instance of the given type to a user-managed page.
+
+    Creates a brand-new QuantData tool instance on the page (so each page
+    gets its own independent tool with its own filter/metadata), updates
+    the page layout to include it as a tab, and persists the mapping.
+
+    Args:
+        page_name: Name of an existing page (use ``qd_list_pages`` to
+            see your pages).
+        tool_canonical_name: Canonical tool name from the existing
+            ``TOOL_DEFINITIONS`` registry (e.g. ``"order_flow"``,
+            ``"net_drift"``, ``"exposure_by_strike"``).
+    """
+    from quantdata_mcp import pages as _pages
+
+    if tool_canonical_name not in TOOL_DEFINITIONS:
+        return (
+            f"Unknown tool type {tool_canonical_name!r}. Available: "
+            f"{', '.join(sorted(TOOL_DEFINITIONS))}"
+        )
+
+    try:
+        client, cfg, _ = _load()
+        page = _pages.find_page(cfg, page_name)
+        if page is None:
+            return f"Page {page_name!r} not found. Create it first with qd_create_page."
+
+        defn = TOOL_DEFINITIONS[tool_canonical_name]
+        result = client.create_tool(
+            page_id=page["page_id"], tool_type=defn.tool_type.value
+        )
+        if not result:
+            return "Failed to create tool instance (see server logs)."
+        tool_id = result.get("response", {}).get("toolDTO", {}).get("id", "")
+        if not tool_id:
+            return "Tool created but no ID returned."
+
+        # Append to the page's tools list and refresh the QuantData layout
+        # so it appears as a tab in the web UI.
+        new_record = _pages.make_tool_record(
+            canonical_name=tool_canonical_name,
+            tool_id=tool_id,
+            label=defn.label,
+        )
+        page["tools"].append(new_record)
+        try:
+            tab_tools = [
+                (t["tool_id"], t.get("label") or t["canonical_name"],
+                 TOOL_DEFINITIONS[t["canonical_name"]].tool_type.value)
+                for t in page["tools"]
+                if t.get("canonical_name") in TOOL_DEFINITIONS
+            ]
+            client.update_page_layout(page["page_id"], tab_tools, page_name=page.get("label", page_name))
+        except Exception as e:  # pragma: no cover - best effort
+            # Layout refresh failed — the tool was still created and is
+            # usable from the data plane; just won't appear as a tab in the
+            # web UI until the next layout refresh.
+            _log.warning("Layout refresh failed for %r: %s", page_name, e)
+
+        _save_managed_page_config()
+        return (
+            f"Added {tool_canonical_name!r} ({defn.label}) to page {page_name!r}.\n"
+            f"Page now has {len(page['tools'])} tool(s)."
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"add_tool_to_page({page_name!r}, {tool_canonical_name!r})", e)
+
+
+@mcp.tool()
+def qd_run_page(page_name: str) -> str:
+    """Fetch every tool on a user-managed page and return a concatenated
+    snapshot — like ``qd_get_market_snapshot`` but scoped to your workspace.
+
+    Sets the page filter to the page's saved ticker/date/expiration once
+    on entry (under the existing ``page_filter_context`` mutex), then
+    iterates each tool on the page, calling its native ``fetch_*`` +
+    formatter pair. Tools not in the runnable registry (heavy ones like
+    heat_map, interval_map, news, equity_prints, plus order_flow which
+    has too many filter axes for a sensible default view) are skipped
+    with a note.
+
+    Args:
+        page_name: Name of an existing page.
+    """
+    from quantdata_mcp import pages as _pages
+
+    try:
+        client, cfg, _ = _load()
+        page = _pages.find_page(cfg, page_name)
+        if page is None:
+            return f"Page {page_name!r} not found."
+        if not page.get("tools"):
+            return f"Page {page_name!r} has no tools yet. Use qd_add_tool_to_page first."
+
+        f = page.get("filter") or {}
+        ticker = f.get("ticker")
+        session_date = f.get("session_date")
+        expiration_date = f.get("expiration_date")
+
+        # Set the page filter once for all the inner fetches.
+        with page_filter_context(
+            ticker=ticker,
+            date=session_date,
+            expiration_date=expiration_date,
+            get_client=lambda: client,
+            get_page_id=lambda: page["page_id"],
+        ):
+            sections: list[str] = [
+                f"# {page.get('label') or page_name} — {ticker or 'page-default'} on "
+                f"{session_date or 'page-default'}",
+                f"# {page.get('url', '')}",
+                "",
+            ]
+            skipped: list[str] = []
+            for tool_record in page["tools"]:
+                cname = tool_record.get("canonical_name", "?")
+                tid = tool_record.get("tool_id", "")
+                if not tid:
+                    continue
+                triple = _pages.fetcher_for(cname)
+                if triple is None:
+                    skipped.append(cname)
+                    continue
+                fetch_method_name, formatter_attr, fmt_kwargs = triple
+                fetch_method = getattr(client, fetch_method_name, None)
+                formatter = globals().get(formatter_attr)
+                if fetch_method is None or formatter is None:
+                    skipped.append(cname)
+                    continue
+                try:
+                    data = fetch_method(tid)
+                    # Build kwargs: drop the special ``_pass_ticker`` flag
+                    # and inject ``ticker`` into the call when set.
+                    kwargs = dict(fmt_kwargs)
+                    pass_ticker = kwargs.pop("_pass_ticker", False)
+                    if pass_ticker and ticker:
+                        kwargs["ticker"] = ticker
+                    section = formatter(data, **kwargs)
+                    sections.append(f"## {cname}\n{section}")
+                except Exception as e:
+                    sections.append(f"## {cname}\nError fetching: {e}")
+            if skipped:
+                sections.append(
+                    f"\n(skipped: {', '.join(skipped)} — tool types not yet "
+                    "supported in qd_run_page batch view)"
+                )
+        return "\n\n".join(sections)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"run_page({page_name!r})", e)
+
+
+@mcp.tool()
+def qd_delete_page(page_name: str, delete_tools: bool = False) -> str:
+    """Delete a user-managed page.
+
+    Args:
+        page_name: Name of the page.
+        delete_tools: When ``True``, also delete every tool instance on
+            the page (otherwise the page is removed but its tools linger
+            in the user's QuantData account). Defaults to ``False`` —
+            safer; you can always reuse the tool IDs by re-attaching.
+    """
+    from quantdata_mcp import pages as _pages
+
+    try:
+        client, cfg, _ = _load()
+        page = _pages.find_page(cfg, page_name)
+        if page is None:
+            return f"Page {page_name!r} not found."
+
+        deleted_tools = 0
+        if delete_tools:
+            for t in page.get("tools") or []:
+                tid = t.get("tool_id")
+                if not tid:
+                    continue
+                if client.delete_tool(tid):
+                    deleted_tools += 1
+
+        ok = client.delete_page(page["page_id"])
+        if not ok:
+            return f"Failed to delete page on QuantData side (see server logs)."
+
+        idx = _pages.page_index(cfg, page_name)
+        if idx >= 0:
+            cfg.pages.pop(idx)
+            _save_managed_page_config()
+
+        suffix = (
+            f" (also deleted {deleted_tools} tool(s))" if delete_tools else ""
+        )
+        return f"Deleted page {page_name!r}{suffix}."
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"delete_page({page_name!r})", e)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

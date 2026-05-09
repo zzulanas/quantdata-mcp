@@ -18,6 +18,12 @@ class Config:
     instance_id: str
     page_id: str = ""
     tools: dict[str, str] = field(default_factory=dict)  # canonical name -> tool UUID
+    # v0.5.0 — user-managed named pages. Each entry is a dict with keys:
+    #   {name, label, page_id, url, filter, tools, created_at}
+    # See ``quantdata_mcp.server`` for the schema documented in
+    # ``qd_create_page`` and friends. Stored as plain dicts (not
+    # nested dataclasses) so callers can extend without schema migrations.
+    pages: list[dict] = field(default_factory=list)
 
 
 def config_exists() -> bool:
@@ -36,6 +42,7 @@ def load_config() -> Config:
         instance_id=data["instance_id"],
         page_id=data.get("page_id", ""),
         tools=data.get("tools", {}),
+        pages=data.get("pages", []),
     )
 
 
@@ -49,6 +56,7 @@ def save_config(config: Config) -> None:
                 "instance_id": config.instance_id,
                 "page_id": config.page_id,
                 "tools": config.tools,
+                "pages": config.pages,
             },
             indent=2,
         )

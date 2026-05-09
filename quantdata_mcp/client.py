@@ -1309,6 +1309,28 @@ class QuantDataClient:
             logger.error(f"Failed to list pages: {e}")
             return []
 
+    def delete_page(self, page_id: str) -> bool:
+        """Delete a page by ID. Used to tear down user-managed named pages."""
+        try:
+            self._make_request("DELETE", f"page/{page_id}", timeout=10)
+            logger.info(f"Deleted page {page_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete page {page_id[:8]}...: {e}")
+            return False
+
+    def delete_tool(self, tool_id: str) -> bool:
+        """Delete a tool instance by ID. Used by ``qd_delete_page`` when
+        ``delete_tools=True`` is requested to clean up the page's tools too.
+        """
+        try:
+            self._make_request("DELETE", f"tool/{tool_id}", timeout=10)
+            logger.info(f"Deleted tool {tool_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete tool {tool_id[:8]}...: {e}")
+            return False
+
     # ------------------------------------------------------------------
     # Filter groups (server-side persistent filter sets)
     # ------------------------------------------------------------------
