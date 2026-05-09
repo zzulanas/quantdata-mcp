@@ -1,0 +1,30 @@
+{
+  "response": {
+    "sessionDatesToPutCallOpenInterest": {
+      "2026-05-01": {
+        "callOpenInterest": 104356,
+        "putOpenInterest": 262329
+      },
+      "2026-05-04": {
+        "callOpenInterest": 136933,
+        "putOpenInterest": 307806
+      },
+      "2026-05-05": {
+        "callOpenInterest": 147431,
+        "putOpenInterest": 340956
+      },
+      "2026-05-06": {
+        "callOpenInterest": 161773,
+        "putOpenInterest": 358126
+      },
+      "2026-05-07": {
+        "callOpenInterest": 174816,
+        "putOpenInterest": 385805
+      },
+      "2026-05-08": {
+        "callOpenInterest": 293246,
+        "putOpenInterest": 522820
+      }
+    }
+  }
+}

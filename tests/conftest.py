@@ -49,6 +49,49 @@ def net_flow_response() -> dict[str, Any]:
     return _load_fixture("net_flow")
 
 
+# PR 2 — Tier-1 expansion fixtures
+@pytest.fixture
+def volatility_skew_response() -> dict[str, Any]:
+    """Sanitized sample of /api/options/volatility-skew/{tool_id}."""
+    return _load_fixture("volatility_skew")
+
+
+@pytest.fixture
+def term_structure_response() -> dict[str, Any]:
+    """Sanitized sample of /api/options/term-structure/{tool_id}."""
+    return _load_fixture("term_structure")
+
+
+@pytest.fixture
+def volatility_drift_response() -> dict[str, Any]:
+    """Sanitized sample of /api/options/volatility-drift/{tool_id}."""
+    return _load_fixture("volatility_drift")
+
+
+@pytest.fixture
+def max_pain_over_time_response() -> dict[str, Any]:
+    """Sanitized sample of /api/options/max-pain/time/{tool_id}."""
+    return _load_fixture("max_pain_over_time")
+
+
+@pytest.fixture
+def oi_change_response() -> dict[str, Any]:
+    """Sanitized sample of /api/options/open-interest/change/{tool_id}."""
+    return _load_fixture("oi_change")
+
+
+@pytest.fixture
+def oi_by_expiration_response() -> dict[str, Any]:
+    """Sanitized sample of /api/options/open-interest/expiration/{tool_id}."""
+    return _load_fixture("oi_by_expiration")
+
+
+@pytest.fixture
+def oi_over_time_response() -> dict[str, Any]:
+    """Sanitized sample of /api/options/open-interest/time/{tool_id}."""
+    return _load_fixture("oi_over_time")
+
+
 # ---------------------------------------------------------------------------
 # Mock client / specs (tool_context refactor tests)
 # ---------------------------------------------------------------------------
@@ -134,6 +177,15 @@ def mock_specs() -> dict[str, ToolSpec]:
         ("contract_statistics", ToolType.CONTRACT_STATISTICS, "options/contract/statistics"),
         ("exposure_by_expiration", ToolType.EXPOSURE_BY_EXPIRATION, "options/exposure/expiration"),
         ("contract_price_time", ToolType.CONTRACT_PRICE_TIME, "options/contract/price/time"),
+        # PR 2 — 8 new Tier-1 tools
+        ("volatility_skew", ToolType.VOLATILITY_SKEW, "options/volatility-skew"),
+        ("term_structure", ToolType.TERM_STRUCTURE, "options/term-structure"),
+        ("volatility_drift", ToolType.VOLATILITY_DRIFT, "options/volatility-drift"),
+        ("max_pain_over_time", ToolType.MAX_PAIN_OVER_TIME, "options/max-pain/time"),
+        ("oi_change", ToolType.OI_CHANGE, "options/open-interest/change"),
+        ("oi_by_expiration", ToolType.OI_BY_EXPIRATION, "options/open-interest/expiration"),
+        ("oi_over_time", ToolType.OI_OVER_TIME, "options/open-interest/time"),
+        ("unconsolidated_flow", ToolType.ORDER_FLOW_UNCONSOLIDATED, "options/order-flow/unconsolidated"),
     ]
     return {
         name: ToolSpec(tool_id=f"tool-{name}", tool_type=t, endpoint=ep, label=name)

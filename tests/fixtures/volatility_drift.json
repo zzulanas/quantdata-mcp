@@ -1,0 +1,38 @@
+{
+  "response": {
+    "volatilityDrift": {
+      "1778273580000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      },
+      "1778273640000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      },
+      "1778273700000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      },
+      "1778273760000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      },
+      "1778273820000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      },
+      "1778273880000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      },
+      "1778273940000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      },
+      "1778274240000": {
+        "arv": 0.0,
+        "stockPriceInCents": 739743
+      }
+    }
+  }
+}
