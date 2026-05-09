@@ -3200,6 +3200,135 @@ def _regenerate_keys(tree: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Time scrubber — persistent intraday playback (PR 14)
+# ---------------------------------------------------------------------------
+#
+# Each canonical tool has a ``numberOfMinutesIntoMarketOpen`` (sic — the
+# field is misnamed server-side; it's actually minutes from MIDNIGHT, not
+# from market open) metadata field that scrubs the chart to a specific
+# time of day. Setting it persists; subsequent fetches return data as it
+# was at that moment, and the QuantData web UI renders accordingly.
+# These wrappers expose the primitive so users can step through a session.
+
+
+_TIME_RE = __import__("re").compile(
+    r"^\s*(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|AM|PM)?\s*$"
+)
+
+
+def _parse_time_to_minutes(value: int | str) -> int:
+    """Accept ``int`` (minutes from midnight) or a flexible time string and
+    return minutes from midnight.
+
+    Accepted string forms::
+
+        "9:30"      → 570 (assumed AM if hour <= 12)
+        "09:30"     → 570
+        "9:30 AM"   → 570
+        "13:30"     → 810
+        "1:30 PM"   → 810
+        "16:00"     → 960
+        "4 PM"      → 960
+    """
+    if isinstance(value, int):
+        if not 0 <= value <= 1440:
+            raise ValueError(f"minutes must be 0-1440, got {value}")
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"time must be int or str, got {type(value).__name__}")
+    m = _TIME_RE.match(value)
+    if not m:
+        raise ValueError(
+            f"unparseable time {value!r}. Use 'HH:MM', '9:30 AM', '16:00', or "
+            "an integer count of minutes from midnight."
+        )
+    hour = int(m.group("h"))
+    minute = int(m.group("m") or 0)
+    ampm = (m.group("ampm") or "").lower()
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    if not 0 <= hour <= 24 or not 0 <= minute <= 59:
+        raise ValueError(f"out-of-range time components in {value!r}")
+    return hour * 60 + minute
+
+
+def _format_minutes(minutes: int) -> str:
+    """Render ``minutes from midnight`` as ``HH:MM`` for display."""
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+@mcp.tool()
+def qd_set_tool_time(tool_name: str, time: str | int) -> str:
+    """Scrub a tool to a specific time of day. Persists until reset.
+
+    Sets ``numberOfMinutesIntoMarketOpen`` on the tool's metadata. The
+    QuantData web UI re-renders to show the chart as it was at that
+    moment. Both the chart and subsequent ``qd_get_*`` calls will use the
+    scrubbed time until you call :func:`qd_reset_to_live`.
+
+    Args:
+        tool_name: Canonical name (``"exposure_by_strike"``, ``"net_drift"``,
+            ``"oi_by_strike"``, etc.) or a raw QuantData tool ID.
+        time: Either a clock time (``"10:30"``, ``"9:30 AM"``, ``"16:00"``,
+            ``"4 PM"``) or an integer count of minutes from midnight
+            (``630`` = 10:30 AM, ``960`` = 4 PM, ``570`` = market open).
+
+    Common reference points:
+        570  = 09:30 AM (market open)
+        720  = 12:00 PM
+        930  = 03:30 PM
+        960  = 04:00 PM (market close)
+    """
+    try:
+        minutes = _parse_time_to_minutes(time)
+    except ValueError as e:
+        return f"Time parse error: {e}"
+    try:
+        specs = _get_specs()
+        if tool_name not in specs and not _UUID_RE.match(tool_name):
+            return f"Unknown tool {tool_name!r}. Available: {', '.join(sorted(specs))}"
+        tool_id = _resolve_tool_id(tool_name)
+        ok = _get_client().set_tool_time(tool_id, minutes)
+        if not ok:
+            return "Set-time failed (see server logs)."
+        return (
+            f"Scrubbed {tool_name!r} to {_format_minutes(minutes)} "
+            f"({minutes} min from midnight). "
+            f"Refresh the QuantData browser tab to see the chart at that moment."
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"set_tool_time({tool_name!r})", e)
+
+
+@mcp.tool()
+def qd_reset_to_live(tool_name: str) -> str:
+    """Remove the time scrubber from a tool — return it to live mode.
+
+    Drops ``numberOfMinutesIntoMarketOpen`` from the tool's metadata so
+    subsequent fetches and the web UI render the most recent data again.
+    """
+    try:
+        specs = _get_specs()
+        if tool_name not in specs and not _UUID_RE.match(tool_name):
+            return f"Unknown tool {tool_name!r}. Available: {', '.join(sorted(specs))}"
+        tool_id = _resolve_tool_id(tool_name)
+        ok = _get_client().reset_to_live(tool_id)
+        return (
+            f"{tool_name!r} reset to live mode."
+            if ok
+            else "Reset failed (see server logs)."
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"reset_to_live({tool_name!r})", e)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
