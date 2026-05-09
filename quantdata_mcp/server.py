@@ -28,6 +28,7 @@ from quantdata_mcp._context import (
     format_error,
     page_filter_context,
     tool_context,
+    update_active_page,
 )
 from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
 from quantdata_mcp.config import Config, config_exists, load_config, save_config
@@ -759,7 +760,7 @@ def _fmt_volatility_skew(
     data: dict[str, Any] | None,
     contract_type: str | None = None,
     near_n: int = 12,
-    ticker: str = "SPX",
+    ticker: str | None = None,
 ) -> str:
     """Format volatility skew — IV per strike around the spot, by expiration.
 
@@ -1102,7 +1103,7 @@ def _fmt_oi_over_time(
 @mcp.tool()
 def qd_get_exposure_by_strike(
     greek_type: GreekMode = GreekMode.GAMMA,
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     time_minutes: int | None = None,
@@ -1137,7 +1138,7 @@ def qd_get_exposure_by_strike(
             time_minutes=time_minutes,
         ) as ctx:
             data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
-        return _fmt_walls(data, greek_type.value, ticker=ticker)
+        return _fmt_walls(data, greek_type.value, ticker=ctx.ticker)
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -1146,7 +1147,7 @@ def qd_get_exposure_by_strike(
 
 @mcp.tool()
 def qd_get_net_drift(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     moneyness: list[MoneynessType] | None = None,
@@ -1196,7 +1197,7 @@ def qd_get_net_drift(
 @mcp.tool()
 def qd_get_trade_side_stats(
     data_mode: DataMode = DataMode.PREMIUM,
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     moneyness: list[MoneynessType] | None = None,
@@ -1237,7 +1238,7 @@ def qd_get_trade_side_stats(
 
 @mcp.tool()
 def qd_get_max_pain(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
 ) -> str:
@@ -1268,7 +1269,7 @@ def qd_get_max_pain(
 
 @mcp.tool()
 def qd_get_iv_rank(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     lookback_period: int = 365,
@@ -1314,7 +1315,7 @@ def qd_get_iv_rank(
 
 @mcp.tool()
 def qd_get_net_flow(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     moneyness: list[MoneynessType] | None = None,
@@ -1365,7 +1366,7 @@ def qd_get_net_flow(
 
 @mcp.tool()
 def qd_get_oi_by_strike(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     near_strike: float | None = None,
@@ -1389,7 +1390,7 @@ def qd_get_oi_by_strike(
             needs_tool=False,
         ) as ctx:
             data = ctx.client.fetch_oi_by_strike(ctx.tool_spec.tool_id)
-        return _fmt_oi_by_strike(data, near_strike, ticker=ticker)
+        return _fmt_oi_by_strike(data, near_strike, ticker=ctx.ticker)
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -1398,7 +1399,7 @@ def qd_get_oi_by_strike(
 
 @mcp.tool()
 def qd_get_contract_statistics(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     moneyness: list[MoneynessType] | None = None,
@@ -1440,7 +1441,7 @@ def qd_get_contract_statistics(
 @mcp.tool()
 def qd_get_exposure_by_expiration(
     greek_type: GreekMode = GreekMode.GAMMA,
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     representation_mode: RepresentationMode = RepresentationMode.PER_ONE_PERCENT_MOVE,
@@ -1477,7 +1478,7 @@ def qd_get_exposure_by_expiration(
             },
         ) as ctx:
             data = ctx.client.fetch_exposure_by_expiration(ctx.tool_spec.tool_id)
-        return _fmt_exposure_by_expiration(data, greek_type.value, ticker=ticker)
+        return _fmt_exposure_by_expiration(data, greek_type.value, ticker=ctx.ticker)
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -1488,7 +1489,7 @@ def qd_get_exposure_by_expiration(
 def qd_get_contract_price(
     strike: float,
     contract_type: ContractTypeFilter = ContractTypeFilter.CALL,
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     aggregation: AggregationPeriod = AggregationPeriod.ONE_MINUTE,
@@ -1531,7 +1532,7 @@ def qd_get_contract_price(
 
 @mcp.tool()
 def qd_get_order_flow(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     # ----- Existing filters (kept verbatim for backwards compatibility) -----
@@ -1686,7 +1687,7 @@ def qd_get_order_flow(
 
 @mcp.tool()
 def qd_get_market_snapshot(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
 ) -> str:
@@ -1722,7 +1723,7 @@ def qd_get_market_snapshot(
                 skip_page_filter=True,
             ) as ctx:
                 gex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
-                sections.append(_fmt_walls(gex_data, "GAMMA", ticker=ticker))
+                sections.append(_fmt_walls(gex_data, "GAMMA", ticker=ctx.ticker))
 
             # DEX walls -- separate context so the previous one restores cleanly.
             with tool_context(
@@ -1734,7 +1735,7 @@ def qd_get_market_snapshot(
                 skip_page_filter=True,
             ) as ctx:
                 dex_data = ctx.client.fetch_strike_data(ctx.tool_spec.tool_id)
-                sections.append(_fmt_walls(dex_data, "DELTA", ticker=ticker))
+                sections.append(_fmt_walls(dex_data, "DELTA", ticker=ctx.ticker))
 
             # Remaining sections only need the page filter -- no per-tool
             # metadata mutations -- so we use needs_tool=False to skip the
@@ -1794,31 +1795,51 @@ def qd_get_market_snapshot(
 @mcp.tool()
 def qd_set_page_date(
     date: str,
-    ticker: str = "SPX",
+    ticker: str | None = None,
     expiration_date: str | None = None,
 ) -> str:
     """Change the session date, ticker, and/or expiration for historical analysis.
 
-    Sets the QuantData page filter so subsequent tool calls return data
-    for that session. Useful for switching tickers or analyzing non-0DTE expirations.
+    Sets the QuantData page filter and updates the active-page cache so
+    subsequent ``qd_get_*`` tool calls inherit this context unless they
+    pass explicit ticker/date args of their own.
 
     Args:
-        date: Session date in YYYY-MM-DD format
-        ticker: Ticker symbol (default: SPX). Any optionable ticker works.
-        expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE; set differently for weeklies/monthlies)
+        date: Session date in YYYY-MM-DD format.
+        ticker: Ticker symbol. ``None`` (default) keeps whatever ticker is
+            currently active; passes through to ``"SPX"`` only on a fresh
+            session with no cached state. Any optionable ticker works.
+        expiration_date: Expiration date YYYY-MM-DD (default: same as date
+            for 0DTE; set differently for weeklies / monthlies).
     """
+    # Resolve ticker for the actual page-filter PUT and the cache update.
+    from quantdata_mcp._context import _active_page  # noqa: I001 — local import keeps the module-level state singleton clear
+
+    resolved_ticker = ticker or _active_page.get("ticker") or "SPX"
     try:
         c = _get_client()
         ok = c.set_page_filter(
             _get_page_id(),
             session_date=date,
-            ticker=ticker,
+            ticker=resolved_ticker,
             expiration_date=expiration_date,
         )
-        exp_label = expiration_date or date
         if ok:
-            return f"Page set to {ticker} on {date} (expiration: {exp_label}). All subsequent tool calls will return data for this session."
-        return f"Failed to set page filter."
+            # Persist to the active-page cache so following tool calls
+            # inherit the context. ``update_active_page`` only overwrites
+            # non-None args, so missing expiration_date keeps any prior
+            # cached value.
+            update_active_page(
+                session_date=date,
+                ticker=resolved_ticker,
+                expiration_date=expiration_date,
+            )
+            exp_label = expiration_date or date
+            return (
+                f"Page set to {resolved_ticker} on {date} (expiration: {exp_label}). "
+                f"Subsequent tool calls inherit this context until you change it."
+            )
+        return "Failed to set page filter."
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -1833,7 +1854,7 @@ def qd_set_page_date(
 
 @mcp.tool()
 def qd_get_volatility_skew(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     contract_type: ContractTypeFilter | None = None,
@@ -1884,7 +1905,7 @@ def qd_get_volatility_skew(
 
 @mcp.tool()
 def qd_get_term_structure(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     contract_type: ContractTypeFilter | None = None,
@@ -1940,7 +1961,7 @@ def qd_get_term_structure(
             filter_updates=filter_updates,
         ) as ctx:
             data = ctx.client.fetch_term_structure(ctx.tool_spec.tool_id)
-        return _fmt_term_structure(data, ticker=ticker)
+        return _fmt_term_structure(data, ticker=ctx.ticker)
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -1949,7 +1970,7 @@ def qd_get_term_structure(
 
 @mcp.tool()
 def qd_get_volatility_drift(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     last_n: int = 10,
@@ -1987,7 +2008,7 @@ def qd_get_volatility_drift(
 
 @mcp.tool()
 def qd_get_max_pain_over_time(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
 ) -> str:
@@ -2011,7 +2032,7 @@ def qd_get_max_pain_over_time(
             filter_updates={"ticker": _eq(ticker)},
         ) as ctx:
             data = ctx.client.fetch_max_pain_over_time(ctx.tool_spec.tool_id)
-        return _fmt_max_pain_over_time(data, ticker=ticker)
+        return _fmt_max_pain_over_time(data, ticker=ctx.ticker)
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -2020,7 +2041,7 @@ def qd_get_max_pain_over_time(
 
 @mcp.tool()
 def qd_get_oi_change(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     contract_type: ContractTypeFilter | None = None,
@@ -2074,7 +2095,7 @@ def qd_get_oi_change(
 
 @mcp.tool()
 def qd_get_oi_by_expiration(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     strikes: list[float] | None = None,
@@ -2102,7 +2123,7 @@ def qd_get_oi_by_expiration(
             },
         ) as ctx:
             data = ctx.client.fetch_oi_by_expiration(ctx.tool_spec.tool_id)
-        return _fmt_oi_by_expiration(data, ticker=ticker)
+        return _fmt_oi_by_expiration(data, ticker=ctx.ticker)
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -2111,7 +2132,7 @@ def qd_get_oi_by_expiration(
 
 @mcp.tool()
 def qd_get_oi_over_time(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     strikes: list[float] | None = None,
@@ -2149,7 +2170,7 @@ def qd_get_oi_over_time(
             },
         ) as ctx:
             data = ctx.client.fetch_oi_over_time(ctx.tool_spec.tool_id)
-        return _fmt_oi_over_time(data, last_n=last_n, ticker=ticker)
+        return _fmt_oi_over_time(data, last_n=last_n, ticker=ctx.ticker)
     except QuantDataAuthError:
         return AUTH_ERROR_MESSAGE
     except Exception as e:
@@ -2158,7 +2179,7 @@ def qd_get_oi_over_time(
 
 @mcp.tool()
 def qd_get_unconsolidated_flow(
-    ticker: str = "SPX",
+    ticker: str | None = None,
     date: str | None = None,
     expiration_date: str | None = None,
     # ----- Existing filters (mirror order_flow) -----

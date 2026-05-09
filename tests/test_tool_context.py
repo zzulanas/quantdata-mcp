@@ -136,36 +136,69 @@ def test_eq_helper_shape() -> None:
     assert _eq(170_00) == {"filterOperationType": "EQUALS", "value": 17000}
 
 
-def test_page_filter_restored_when_changed(mock_client, context_kwargs) -> None:
-    """Changing ticker/date away from defaults triggers a restore on exit."""
+def test_page_filter_is_sticky_across_calls(mock_client, context_kwargs) -> None:
+    """The page filter is set once on enter and STAYS — it is no longer
+    restored to today/SPX on exit. Subsequent ``qd_get_*`` calls inherit
+    the context unless they override it explicitly. This is the
+    ``sticky-page-filter`` contract introduced in PR 15.
+    """
+    from quantdata_mcp._context import clear_active_page
+
+    clear_active_page()  # isolate from other tests' state
     with tool_context(
         "net_drift",
-        ticker="AAPL",          # not the default SPX
-        date="2024-12-20",      # not today
+        ticker="AAPL",
+        date="2024-12-20",
         **context_kwargs,
     ):
         pass
 
-    # Two set_page_filter calls: one to apply AAPL, one to restore SPX/today.
-    assert mock_client.set_page_filter.call_count == 2
-    restore_call = mock_client.set_page_filter.call_args_list[-1]
-    assert restore_call.kwargs["ticker"] == "SPX"
-
-
-def test_page_filter_not_re_set_when_already_default(mock_client, context_kwargs) -> None:
-    """If we set ticker=SPX and date=today, no restore PUT is issued."""
-    from quantdata_mcp._context import _today
-
-    with tool_context(
-        "net_drift",
-        ticker="SPX",
-        date=_today(),
-        **context_kwargs,
-    ):
-        pass
-
-    # Only one page-filter call (the initial apply); no restore needed.
+    # Exactly one set_page_filter call (the initial apply). No restore.
     assert mock_client.set_page_filter.call_count == 1
+    apply_call = mock_client.set_page_filter.call_args_list[0]
+    assert apply_call.kwargs["ticker"] == "AAPL"
+    assert apply_call.kwargs["session_date"] == "2024-12-20"
+
+
+def test_active_page_cache_inherits_when_args_omitted(mock_client, context_kwargs) -> None:
+    """Tool calls without explicit ticker/date inherit the cached active page
+    instead of falling back to today/SPX."""
+    from quantdata_mcp._context import clear_active_page, get_active_page
+
+    clear_active_page()
+    # First call sets context to AAPL
+    with tool_context(
+        "net_drift",
+        ticker="AAPL",
+        date="2024-12-20",
+        **context_kwargs,
+    ):
+        pass
+    assert get_active_page()["ticker"] == "AAPL"
+    assert get_active_page()["session_date"] == "2024-12-20"
+
+    mock_client.set_page_filter.reset_mock()
+
+    # Second call passes no ticker/date — should inherit AAPL/2024-12-20
+    with tool_context("net_drift", **context_kwargs):
+        pass
+    apply_call = mock_client.set_page_filter.call_args_list[0]
+    assert apply_call.kwargs["ticker"] == "AAPL"
+    assert apply_call.kwargs["session_date"] == "2024-12-20"
+
+
+def test_active_page_falls_through_to_today_spx_when_cache_empty(
+    mock_client, context_kwargs
+) -> None:
+    """Fresh session with no cache: tool calls default to today/SPX."""
+    from quantdata_mcp._context import _today, clear_active_page
+
+    clear_active_page()
+    with tool_context("net_drift", **context_kwargs):
+        pass
+    apply_call = mock_client.set_page_filter.call_args_list[0]
+    assert apply_call.kwargs["ticker"] == "SPX"
+    assert apply_call.kwargs["session_date"] == _today()
 
 
 def test_time_minutes_folded_into_apply_put(mock_client, context_kwargs) -> None:
