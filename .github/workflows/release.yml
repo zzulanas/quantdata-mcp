@@ -16,7 +16,7 @@ on:
   workflow_dispatch:  # manual trigger via the Actions tab as a fallback
 
 permissions:
-  contents: read
+  contents: write  # needs write to create the GitHub release for the tag
 
 jobs:
   build-and-publish:
@@ -47,7 +47,10 @@ jobs:
           echo "Tag and package version both at $pkg_version"
 
       - name: Run tests before publish
-        run: uv run pytest -q
+        # ``pytest`` lives under the ``test`` optional-dependencies group
+        # (see pyproject.toml). ``uv run --extra test`` installs that
+        # group into the run env.
+        run: uv run --extra test pytest -q
 
       - name: Build distribution
         run: |
@@ -70,3 +73,25 @@ jobs:
           else
             echo "::warning::PyPI shows latest as $latest (expected $tag_version) — may still be propagating"
           fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          # Pull the changelog section for this version. The expected
+          # heading is `## [VERSION] —` (em-dash) followed by the entry
+          # body until the next ## heading.
+          notes=$(awk -v ver="$tag_version" '
+            $0 ~ "^## \\[" ver "\\] —" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md)
+          if [ -z "$notes" ]; then
+            notes="See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md#${tag_version//./}) for details."
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v${tag_version}" \
+            --notes "$notes" \
+            dist/*
