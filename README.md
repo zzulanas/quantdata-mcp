@@ -152,9 +152,22 @@ Restart Claude Desktop. The QuantData tools will appear in your tool list.
 
 | Tool | Description | Key Settings |
 |------|-------------|--------------|
-| `qd_get_order_flow` | Consolidated order flow — individual large trades | `contract_type`, `moneyness`, `trade_side`, `min_premium`, `strikes` |
+| `qd_get_order_flow` | Consolidated order flow — individual large trades (40+ filters) | bool flags (`is_unusual`, `is_golden_sweep`, `is_opening_position`, ...), thresholds (`min_premium`, `min_size`, `min_volume`, `min_iv`, `max_dte`, ...), greek floors (`min_delta`, `min_gamma`, `min_theta`, ...), multi-selects (`sentiment_type`, `trade_type`, `sector`, `industry`, ...) |
 | `qd_get_trade_side_stats` | Trade aggression: AA/A/M/B/BB breakdown | `data_mode`, `moneyness`, `strikes` |
 | `qd_get_contract_statistics` | Total premium, trade count, volume by call/put | `moneyness`, `trade_side`, `strikes` |
+
+`qd_get_order_flow` is the most filter-rich tool — it now exposes the full
+QuantData order-flow filter set (40+ flat kwargs grouped into bool flags,
+GTE/LTE thresholds, greek thresholds, and multi-select lists). Example —
+bullish opening-position sweeps in tech with $10K+ premium:
+
+```python
+qd_get_order_flow(
+    ticker="SPY", is_unusual=True, is_opening_position=True,
+    sentiment_type=[SentimentType.BULLISH], min_premium=10000,
+    trade_type=["AUTO"], sector=["TECHNOLOGY"], last_n=20,
+)
+```
 
 ### Volatility & Pricing
 

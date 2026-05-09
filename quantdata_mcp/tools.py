@@ -67,6 +67,17 @@ class ContractTypeFilter(str, Enum):
     PUT = "PUT"
 
 
+class SentimentType(str, Enum):
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH"
+    NEUTRAL = "NEUTRAL"
+
+
+class ChartType(str, Enum):
+    CANDLESTICK = "CANDLESTICK"
+    LINE = "LINE"
+
+
 @dataclass(frozen=True)
 class ToolDefinition:
     """Template for a tool — no ID until setup creates it."""

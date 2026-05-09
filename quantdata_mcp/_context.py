@@ -76,6 +76,32 @@ def _eq(value: Any) -> dict[str, Any]:
     return {"filterOperationType": "EQUALS", "value": value}
 
 
+def _gte(value: Any) -> dict[str, Any]:
+    """Return a QuantData ``GREATER_THAN_OR_EQUAL_TO`` filter clause around ``value``.
+
+    Used for "minimum" thresholds (e.g. ``min_premium``, ``min_volume``,
+    greek floors). Mirrors the shape of :func:`_eq`.
+    """
+    return {"filterOperationType": "GREATER_THAN_OR_EQUAL_TO", "value": value}
+
+
+def _lte(value: Any) -> dict[str, Any]:
+    """Return a QuantData ``LESS_THAN_OR_EQUAL_TO`` filter clause around ``value``.
+
+    Used for "maximum" thresholds (e.g. ``max_dte``, ``max_delta``).
+    """
+    return {"filterOperationType": "LESS_THAN_OR_EQUAL_TO", "value": value}
+
+
+def _contains(value: Any) -> dict[str, Any]:
+    """Return a QuantData ``CONTAINS`` filter clause around ``value``.
+
+    Used for substring matches (e.g. ticker fragments) where the API
+    supports a CONTAINS operator on a text field.
+    """
+    return {"filterOperationType": "CONTAINS", "value": value}
+
+
 @dataclass
 class ToolContext:
     """Per-call context object yielded by :func:`tool_context`.
