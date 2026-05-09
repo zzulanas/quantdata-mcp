@@ -186,6 +186,14 @@ def mock_specs() -> dict[str, ToolSpec]:
         ("oi_by_expiration", ToolType.OI_BY_EXPIRATION, "options/open-interest/expiration"),
         ("oi_over_time", ToolType.OI_OVER_TIME, "options/open-interest/time"),
         ("unconsolidated_flow", ToolType.ORDER_FLOW_UNCONSOLIDATED, "options/order-flow/unconsolidated"),
+        # v0.4.0 — 7 new Tier-2 tools
+        ("heat_map", ToolType.HEAT_MAP, "options/heat-map"),
+        ("interval_map", ToolType.INTERVAL_MAP, "interval-map"),
+        ("news_articles", ToolType.NEWS_ARTICLES, "news/articles"),
+        ("gainers_losers", ToolType.GAINERS_LOSERS, "options/gainers-losers"),
+        ("dark_pool_levels", ToolType.DARK_POOL_LEVELS, "equities/dark-pool/levels"),
+        ("equity_prints", ToolType.EQUITY_PRINTS, "equities/prints"),
+        ("stock_price_time", ToolType.STOCK_PRICE_TIME, "equity/price/time"),
     ]
     return {
         name: ToolSpec(tool_id=f"tool-{name}", tool_type=t, endpoint=ep, label=name)

@@ -27,6 +27,15 @@ class ToolType(str, Enum):
     OI_BY_EXPIRATION = "OPTIONS_OPEN_INTEREST_BY_EXPIRATION_CHART"
     OI_OVER_TIME = "OPTIONS_OPEN_INTEREST_OVER_TIME_CHART"
     ORDER_FLOW_UNCONSOLIDATED = "OPTIONS_ORDER_FLOW_UNCONSOLIDATED_TABLE"
+    # v0.4.0 — 7 new Tier-2 tools (broader market context: heat map, news,
+    # gainers/losers, dark pool, equity prints, stock OHLC, interval map).
+    HEAT_MAP = "OPTIONS_HEAT_MAP_CHART"
+    INTERVAL_MAP = "INTERVAL_MAP_CHART"
+    NEWS_ARTICLES = "NEWS_ARTICLE_LISTING"
+    GAINERS_LOSERS = "OPTIONS_GAINERS_LOSERS_TABLE"
+    DARK_POOL_LEVELS = "DARK_POOL_LEVELS_TABLE"
+    EQUITY_PRINTS = "EQUITY_PRINTS_TABLE"
+    STOCK_PRICE_TIME = "STOCK_PRICE_OVER_TIME_CHART"
 
 
 class GreekMode(str, Enum):
@@ -223,6 +232,49 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         tool_type=ToolType.ORDER_FLOW_UNCONSOLIDATED,
         endpoint="options/order-flow/unconsolidated",
         label="Order Flow (Unconsolidated)",
+    ),
+    # v0.4.0 — 7 new Tier-2 tools
+    "heat_map": ToolDefinition(
+        canonical_name="heat_map",
+        tool_type=ToolType.HEAT_MAP,
+        endpoint="options/heat-map",
+        label="Heat Map",
+    ),
+    "interval_map": ToolDefinition(
+        canonical_name="interval_map",
+        tool_type=ToolType.INTERVAL_MAP,
+        endpoint="interval-map",
+        label="Interval Map",
+    ),
+    "news_articles": ToolDefinition(
+        canonical_name="news_articles",
+        tool_type=ToolType.NEWS_ARTICLES,
+        endpoint="news/articles",
+        label="News Articles",
+    ),
+    "gainers_losers": ToolDefinition(
+        canonical_name="gainers_losers",
+        tool_type=ToolType.GAINERS_LOSERS,
+        endpoint="options/gainers-losers",
+        label="Gainers / Losers",
+    ),
+    "dark_pool_levels": ToolDefinition(
+        canonical_name="dark_pool_levels",
+        tool_type=ToolType.DARK_POOL_LEVELS,
+        endpoint="equities/dark-pool/levels",
+        label="Dark Pool Levels",
+    ),
+    "equity_prints": ToolDefinition(
+        canonical_name="equity_prints",
+        tool_type=ToolType.EQUITY_PRINTS,
+        endpoint="equities/prints",
+        label="Equity Prints",
+    ),
+    "stock_price_time": ToolDefinition(
+        canonical_name="stock_price_time",
+        tool_type=ToolType.STOCK_PRICE_TIME,
+        endpoint="equity/price/time",
+        label="Stock Price / Time",
     ),
 }
 

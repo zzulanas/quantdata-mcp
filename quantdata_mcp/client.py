@@ -1003,6 +1003,86 @@ class QuantDataClient:
             return None
 
     # ------------------------------------------------------------------
+    # Data fetching -- v0.4.0 Tier-2 tools
+    # ------------------------------------------------------------------
+
+    def fetch_heat_map(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch the options heat map -- value (premium / volume / count) per
+        strike per expiration.
+
+        Note the raw payload is several MB for liquid tickers; the
+        ``qd_get_heat_map`` formatter trims to the heaviest cells before
+        returning to the LLM.
+        """
+        try:
+            r = self._make_request("GET", f"options/heat-map/{tool_id}", timeout=60)
+            return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch heat map: {e}")
+            return None
+
+    def fetch_interval_map(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch the interval map -- intraday greek values per strike per
+        time-bucket (default 5-minute aggregation)."""
+        try:
+            r = self._make_request("GET", f"interval-map/{tool_id}", timeout=60)
+            return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch interval map: {e}")
+            return None
+
+    def fetch_news_articles(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch news articles tagged to tickers. The response is a list of
+        article dicts (id, title, link, tickerMetadata, topics, publishedTime).
+        """
+        try:
+            r = self._make_request("GET", f"news/articles/{tool_id}", timeout=15)
+            return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch news articles: {e}")
+            return None
+
+    def fetch_gainers_losers(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch the per-ticker gainers/losers summary (bullish / bearish
+        premium aggregates across the market)."""
+        try:
+            r = self._make_request("GET", f"options/gainers-losers/{tool_id}", timeout=30)
+            return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch gainers/losers: {e}")
+            return None
+
+    def fetch_dark_pool_levels(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch dark-pool size at each price level for the underlier."""
+        try:
+            r = self._make_request(
+                "GET", f"equities/dark-pool/levels/{tool_id}", timeout=15
+            )
+            return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch dark pool levels: {e}")
+            return None
+
+    def fetch_equity_prints(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch equity-side prints (every print on the underlying stock)."""
+        try:
+            r = self._make_request("GET", f"equities/prints/{tool_id}", timeout=30)
+            return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch equity prints: {e}")
+            return None
+
+    def fetch_stock_price_time(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch underlying-stock OHLC over time. Default aggregation is
+        1-minute candles."""
+        try:
+            r = self._make_request("GET", f"equity/price/time/{tool_id}", timeout=30)
+            return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch stock price/time: {e}")
+            return None
+
+    # ------------------------------------------------------------------
     # Generic fetch by ToolSpec
     # ------------------------------------------------------------------
 
