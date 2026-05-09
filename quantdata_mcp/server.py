@@ -31,12 +31,22 @@ from quantdata_mcp._context import (
 )
 from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
 from quantdata_mcp.config import Config, config_exists, load_config, save_config
+from quantdata_mcp.filter_group_fields import (
+    FIELDS_BY_GROUP_TYPE,
+    find_field,
+    render_catalog,
+)
 from quantdata_mcp.filter_groups import (
     GROUP_TYPES,
     add_leaf,
     build_filter_tree,
     find_leaves,
+    is_branch,
+    is_leaf,
+    normalise_field,
+    normalise_operator,
     remove_leaves,
+    serialise_value,
     summarise_filter_tree,
     update_leaf,
 )
@@ -2899,6 +2909,279 @@ def _OP_SYMBOL_FOR(op: str) -> str:
         "LESS_THAN_OR_EQUAL_TO": "<=",
         "CONTAINS": " contains ",
     }.get(op, op)
+
+
+# ---------------------------------------------------------------------------
+# Field-catalog discovery + advanced tree operations (PR 13b)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def qd_list_filter_fields(
+    group_type: str = "OPTION_TRADES_UNCONSOLIDATED",
+    kind: str | None = None,
+) -> str:
+    """Catalog of valid filter fields, operators, and enum values for a
+    filter-group type. Use this before ``qd_save_filter_group``,
+    ``qd_add_filter_clause``, or ``qd_save_filter_group_advanced`` so you
+    can pick fields that QuantData actually accepts.
+
+    Args:
+        group_type: One of ``OPTION_TRADES_UNCONSOLIDATED`` (default —
+            covers Net Drift / Net Flow / Order Flow / etc.),
+            ``OPTION_TRADES_CONSOLIDATED``, or ``NEWS_ARTICLES``.
+        kind: Optional filter on field kind to shrink the output:
+            ``"bool"`` / ``"int"`` / ``"float"`` / ``"enum"`` /
+            ``"enum_open"`` / ``"text"`` / ``"date"``. Useful for the
+            trades catalog which has 50+ fields.
+    """
+    if group_type not in FIELDS_BY_GROUP_TYPE:
+        return (
+            f"Unknown group type {group_type!r}. Valid: "
+            f"{', '.join(sorted(FIELDS_BY_GROUP_TYPE))}"
+        )
+    return render_catalog(group_type, kind_filter=kind)
+
+
+# ---- helpers: tree validation + uuid back-fill ----------------------------
+
+
+def _ensure_keys(tree: dict[str, Any]) -> dict[str, Any]:
+    """Walk a raw user-supplied tree and add ``key: <uuid>`` to any node
+    missing one. The QuantData API rejects payloads without keys, so we
+    forgive the LLM for not generating them.
+    """
+    import uuid
+
+    if not isinstance(tree, dict):
+        return tree
+    if "key" not in tree:
+        tree["key"] = str(uuid.uuid4())
+    if "filters" in tree and isinstance(tree["filters"], list):
+        for child in tree["filters"]:
+            _ensure_keys(child)
+    return tree
+
+
+def _normalise_tree_in_place(tree: dict[str, Any]) -> None:
+    """Walk a raw tree and SCREAMING_SNAKE-normalise every leaf's ``field``,
+    canonicalise its ``operationType``, and string-serialise its ``value``.
+    The MCP user can pass camelCase / aliased / native-typed values just
+    like the simple-path tools accept, and this brings the wire payload
+    into the form the QuantData API expects.
+    """
+    if not isinstance(tree, dict):
+        return
+    if "field" in tree:
+        if isinstance(tree.get("field"), str):
+            tree["field"] = normalise_field(tree["field"])
+        op = tree.get("operationType") or tree.get("op")
+        if op:
+            tree["operationType"] = normalise_operator(op)
+            tree.pop("op", None)
+        if "value" in tree:
+            tree["value"] = serialise_value(tree["value"])
+        return
+    if "filters" in tree and isinstance(tree["filters"], list):
+        for child in tree["filters"]:
+            _normalise_tree_in_place(child)
+
+
+def _validate_tree(tree: dict[str, Any], group_type: str) -> list[str]:
+    """Surface (don't enforce) field/operator/value mismatches against the
+    catalog. Returns a list of warning strings — empty if nothing odd.
+    The API is the ultimate source of truth, so warnings are advisory.
+    """
+    warnings: list[str] = []
+
+    def walk(node: dict[str, Any], path: str = "$") -> None:
+        if not isinstance(node, dict):
+            warnings.append(f"{path}: expected dict, got {type(node).__name__}")
+            return
+        if "field" in node:  # leaf
+            field_name = node.get("field", "")
+            spec = find_field(group_type, field_name)
+            if spec is None:
+                warnings.append(
+                    f"{path}: field {field_name!r} not in {group_type} catalog "
+                    f"(may still be valid)"
+                )
+                return
+            op = node.get("operationType")
+            if op and op not in spec.operators:
+                warnings.append(
+                    f"{path}: field {field_name!r} accepts ops "
+                    f"{list(spec.operators)}, got {op!r}"
+                )
+            value = node.get("value")
+            if spec.kind == "enum" and spec.values and isinstance(value, str):
+                # Value can be comma-separated; check each piece.
+                pieces = [p.strip() for p in value.split(",")]
+                bad = [p for p in pieces if p and p not in spec.values]
+                if bad:
+                    warnings.append(
+                        f"{path}: {field_name} value(s) {bad} not in enum "
+                        f"{list(spec.values)}"
+                    )
+            return
+        # branch
+        ct = node.get("conjunctionType")
+        if ct not in ("AND", "OR"):
+            warnings.append(f"{path}: branch missing conjunctionType (got {ct!r})")
+        for i, c in enumerate(node.get("filters") or []):
+            walk(c, f"{path}.filters[{i}]")
+
+    walk(tree)
+    return warnings
+
+
+@mcp.tool()
+def qd_save_filter_group_advanced(
+    name: str,
+    tree: dict[str, Any],
+    group_type: str = "OPTION_TRADES_UNCONSOLIDATED",
+    description: str = "",
+    public: bool = False,
+) -> str:
+    """Create a filter group from a raw nested OR/AND tree.
+
+    For the common case (one AND-group of conditions) prefer
+    :func:`qd_save_filter_group` with a flat ``conditions`` list. Use this
+    advanced variant when you need OR alternatives — e.g. to clone a
+    public group whose tree is ``(A AND B) OR (C AND D)``.
+
+    Tree shape::
+
+        {
+            "conjunctionType": "OR",                 # root
+            "filters": [
+                {
+                    "conjunctionType": "AND",         # branch
+                    "filters": [
+                        {"field": "TICKER", "op": "==", "value": "SPY"},
+                        {"field": "PREMIUM_IN_CENTS", "op": ">=", "value": 1000000},
+                    ],
+                },
+                {
+                    "conjunctionType": "AND",         # OR alternative
+                    "filters": [
+                        {"field": "TICKER", "op": "==", "value": "QQQ"},
+                        {"field": "PREMIUM_IN_CENTS", "op": ">=", "value": 5000000},
+                    ],
+                },
+            ],
+        }
+
+    UUID ``key`` fields are added automatically if missing. Field/operator
+    aliases (``is_complex`` / ``isComplex`` / ``==`` / ``gte``) are
+    normalised. Values are serialised to QuantData's wire format.
+
+    Args:
+        name: Group name.
+        tree: Raw nested tree as above.
+        group_type: One of the values from ``qd_list_filter_fields``.
+        description: Free-text. Defaults to a date stamp matching the UI.
+        public: When True, surfaces in ``qd_search_public_filter_groups``.
+    """
+    if group_type not in GROUP_TYPES:
+        return (
+            f"Unknown group_type {group_type!r}. "
+            f"Valid: {', '.join(sorted(GROUP_TYPES))}"
+        )
+    if not isinstance(tree, dict):
+        return f"`tree` must be a dict, got {type(tree).__name__}."
+
+    # Permissive normalisation — fix what we can, warn on the rest.
+    _normalise_tree_in_place(tree)
+    _ensure_keys(tree)
+    warnings = _validate_tree(tree, group_type)
+
+    try:
+        client = _get_client()
+        dto = client.create_filter_group(
+            name=name, group_type=group_type, description=description, is_public=public,
+        )
+        if dto is None:
+            return "Failed to create filter group (see server logs)."
+        dto["filter"] = tree
+        updated = client.update_filter_group(dto)
+        if updated is None:
+            return f"Created group {dto.get('id', '')[:8]}... but failed to populate tree."
+        out = (
+            f"Saved {name!r} ({updated.get('id', '')[:8]}...).\n"
+            f"Filter: {summarise_filter_tree(tree)}"
+        )
+        if warnings:
+            out += "\n\nValidation warnings (advisory — server accepted the payload):"
+            for w in warnings[:5]:
+                out += f"\n  - {w}"
+            if len(warnings) > 5:
+                out += f"\n  - ... +{len(warnings) - 5} more"
+        return out
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"save_filter_group_advanced({name!r})", e)
+
+
+@mcp.tool()
+def qd_add_or_branch(
+    group_id_or_name: str,
+    conditions: list[dict[str, Any]],
+) -> str:
+    """Add an OR alternative to an existing filter group.
+
+    Appends a new AND-group of ``conditions`` as a sibling of any existing
+    branches under the OR root. Use to extend a saved group with an
+    alternative match path — e.g. add ``(TICKER=QQQ AND PREMIUM>=$50K)`` as
+    an alternative to your existing SPY rule, so the group matches trades
+    on either ticker.
+
+    Conditions are AND'd together within the new branch (same shape as
+    :func:`qd_save_filter_group`'s ``conditions`` parameter).
+
+    Args:
+        group_id_or_name: UUID or name of the existing filter group.
+        conditions: Flat list of ``{field, op, value}`` dicts AND'd
+            together inside the new branch.
+    """
+    if not conditions:
+        return "Pass at least one condition to form the new OR branch."
+    try:
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        # Build the new AND branch using the existing flat-tree builder
+        # then steal just the inner AND-group from it.
+        scaffold = build_filter_tree(conditions)
+        if not scaffold.get("filters"):
+            return "Failed to construct the new branch — empty conditions?"
+        new_branch = scaffold["filters"][0]
+
+        tree = g.get("filter") or {}
+        if not is_branch(tree):
+            # Group has no root yet — synthesise an OR root with the new branch.
+            import uuid
+            tree = {
+                "key": str(uuid.uuid4()),
+                "conjunctionType": "OR",
+                "filters": [new_branch],
+            }
+        else:
+            tree.setdefault("filters", []).append(new_branch)
+        g["filter"] = tree
+
+        updated = _get_client().update_filter_group(g)
+        if updated is None:
+            return "Update failed (see server logs)."
+        return (
+            f"Added OR branch to {g.get('name', '?')!r}.\n"
+            f"Filter now: {summarise_filter_tree(updated.get('filter') or {})}"
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"add_or_branch({group_id_or_name!r})", e)
 
 
 def _regenerate_keys(tree: dict[str, Any]) -> dict[str, Any]:
