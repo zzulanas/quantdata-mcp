@@ -20,6 +20,8 @@ from mcp.server.fastmcp import FastMCP
 from quantdata_mcp._context import (
     AUTH_ERROR_MESSAGE,
     _eq,
+    _gte,
+    _lte,
     format_error,
     page_filter_context,
     tool_context,
@@ -33,6 +35,7 @@ from quantdata_mcp.tools import (
     GreekMode,
     MoneynessType,
     RepresentationMode,
+    SentimentType,
     ToolSpec,
     TradeSideCodeType,
     build_tool_specs,
@@ -701,6 +704,7 @@ def qd_get_net_drift(
     moneyness: list[MoneynessType] | None = None,
     strikes: list[float] | None = None,
     aggregation: AggregationPeriod = AggregationPeriod.ONE_MINUTE,
+    confidence_visible: bool | None = None,
     last_n: int = 10,
 ) -> str:
     """Get net drift data — cumulative call vs put premium flow.
@@ -715,15 +719,19 @@ def qd_get_net_drift(
         moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
         strikes: Filter to specific strike prices in dollars (e.g. [5600.0, 5700.0]). Default: all.
         aggregation: Time aggregation period — ONE_MIN (default), FIVE_MIN, TEN_MIN, FIFTEEN_MIN, THIRTY_MIN, ONE_HOUR.
+        confidence_visible: Toggle the confidence band overlay on the drift chart (server-side metadata only).
         last_n: Number of recent entries to show (default: 10)
     """
+    metadata_updates: dict[str, Any] = {"aggregationPeriodType": aggregation.value}
+    if confidence_visible is not None:
+        metadata_updates["confidenceVisible"] = confidence_visible
     try:
         with tool_context(
             "net_drift",
             ticker=ticker,
             date=date,
             expiration_date=expiration_date,
-            metadata_updates={"aggregationPeriodType": aggregation.value},
+            metadata_updates=metadata_updates,
             filter_updates={
                 "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
                 "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
@@ -1078,49 +1086,159 @@ def qd_get_order_flow(
     ticker: str = "SPX",
     date: str | None = None,
     expiration_date: str | None = None,
+    # ----- Existing filters (kept verbatim for backwards compatibility) -----
     contract_type: ContractTypeFilter | None = None,
     moneyness: list[MoneynessType] | None = None,
     trade_side: list[TradeSideCodeType] | None = None,
     min_premium: float | None = None,
     strikes: list[float] | None = None,
+    # ----- Bool flag filters (snake_case, "is_" prefix preserved) -----
+    is_unusual: bool | None = None,
+    is_golden_sweep: bool | None = None,
+    is_opening_position: bool | None = None,
+    is_etf: bool | None = None,
+    is_index: bool | None = None,
+    is_volume_gt_oi: bool | None = None,
+    # ----- Threshold filters (GTE / LTE) -----
+    min_size: int | None = None,
+    min_volume: int | None = None,
+    min_open_interest: int | None = None,
+    min_iv: float | None = None,
+    min_bid_ask_spread: float | None = None,
+    min_moneyness_pct: float | None = None,
+    min_moneyness_dollars: float | None = None,
+    max_dte: float | None = None,
+    # ----- Greek thresholds (GTE only, except delta which has both) -----
+    min_delta: float | None = None,
+    max_delta: float | None = None,
+    min_gamma: float | None = None,
+    min_theta: float | None = None,
+    min_vega: float | None = None,
+    min_charm: float | None = None,
+    min_vanna: float | None = None,
+    # ----- Multi-select list filters -----
+    sentiment_type: list[SentimentType] | None = None,
+    trade_type: list[str] | None = None,
+    exchange_type: list[str] | None = None,
+    sector: list[str] | None = None,
+    industry: list[str] | None = None,
+    trade_consolidation_type: list[str] | None = None,
+    # ----- Output control -----
     last_n: int = 20,
 ) -> str:
     """Get consolidated order flow — individual large trades with full detail.
 
     The most filter-rich tool. Shows individual option trades with strike, type,
-    side (aggression), premium, size, and sentiment.
+    side (aggression), premium, size, sentiment, and full greeks. Supports
+    40+ filters covering bool flags, numeric thresholds, greek floors/ceilings,
+    and multi-select lists.
+
+    For open-ended list filters (``trade_type``, ``exchange_type``, ``sector``,
+    ``industry``, ``trade_consolidation_type``) valid values come from
+    QuantData's data — common examples:
+
+    * ``trade_type``: ``AUTO``, ``M2S_FLR``, ``MULTI_AUTO_COB``
+    * ``sentiment_type``: ``BULLISH``, ``BEARISH``, ``NEUTRAL``
+
+    Example: bullish sweeps in tech, $10K+ premium, opening positions::
+
+        qd_get_order_flow(
+            ticker="SPY", is_unusual=True, is_opening_position=True,
+            sentiment_type=[SentimentType.BULLISH], min_premium=10000,
+            trade_type=["AUTO"], sector=["TECHNOLOGY"], last_n=20,
+        )
 
     Args:
         ticker: Ticker symbol (default: SPX). Any optionable ticker works.
         date: Session date YYYY-MM-DD (default: today)
         expiration_date: Expiration date YYYY-MM-DD (default: same as date for 0DTE)
         contract_type: Filter to CALL or PUT only. Default: both.
-        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine. Default: all.
-        trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid). Default: all.
-        min_premium: Minimum premium in dollars to filter trades (e.g. 10000 for $10K+). Default: no minimum.
-        strikes: Filter to specific strike prices in dollars (e.g. [5600.0]). Default: all.
-        last_n: Number of recent entries to show (default: 20)
+        moneyness: Filter by moneyness — OTM, ITM, ATM. Pass a list to combine.
+        trade_side: Filter by trade side — AA (Above Ask), A (At Ask), M (Mid), B (At Bid), BB (Below Bid).
+        min_premium: Minimum premium in dollars (e.g. 10000 for $10K+).
+        strikes: Filter to specific strike prices in dollars (e.g. [5600.0]).
+        is_unusual: Only trades flagged as unusual activity.
+        is_golden_sweep: Only "golden sweep" trades (large multi-exchange sweeps).
+        is_opening_position: Only opening positions (volume > prior open interest).
+        is_etf: Only ETF underliers.
+        is_index: Only index underliers (SPX, NDX, etc.).
+        is_volume_gt_oi: Only trades where contract volume exceeds open interest.
+        min_size: Minimum trade size (contracts).
+        min_volume: Minimum daily contract volume.
+        min_open_interest: Minimum open interest.
+        min_iv: Minimum implied volatility (decimal, e.g. 0.25 for 25%).
+        min_bid_ask_spread: Minimum bid-ask spread in dollars.
+        min_moneyness_pct: Minimum moneyness as a percentage (e.g. 5.0 for >=5% OTM/ITM).
+        min_moneyness_dollars: Minimum moneyness in dollars (converted to cents internally).
+        max_dte: Maximum days-to-expiration (fractional). Use 0 for 0DTE only.
+        min_delta / max_delta: Delta range (e.g. 0.30 to 0.70 for ATM-ish).
+        min_gamma: Minimum gamma.
+        min_theta: Minimum theta (typically negative — pass e.g. -0.05 to skip the most decayed).
+        min_vega: Minimum vega.
+        min_charm: Minimum charm.
+        min_vanna: Minimum vanna.
+        sentiment_type: Filter by sentiment classification (BULLISH/BEARISH/NEUTRAL list).
+        trade_type: Free-form trade type codes (e.g. ["AUTO", "M2S_FLR"]).
+        exchange_type: Free-form exchange codes.
+        sector: Free-form sector codes (e.g. ["TECHNOLOGY", "FINANCE"]).
+        industry: Free-form industry codes.
+        trade_consolidation_type: Free-form consolidation type codes.
+        last_n: Number of recent entries to show (default: 20).
     """
+    # Build filter_updates as a single dict — the tool_context manager drops
+    # entries whose value is None, so callers can express "no filter" as None
+    # without polluting the API payload.
+    filter_updates: dict[str, dict[str, Any] | None] = {
+        # Existing filters
+        "contractType": _eq(contract_type.value) if contract_type is not None else None,
+        "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
+        "tradeSideCodeType": _eq([t.value for t in trade_side]) if trade_side else None,
+        "premiumInCents": _gte(int(min_premium * 100)) if min_premium is not None else None,
+        "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
+        # Bool flags
+        "isUnusual": _eq(is_unusual) if is_unusual is not None else None,
+        "isGoldenSweep": _eq(is_golden_sweep) if is_golden_sweep is not None else None,
+        "isOpeningPosition": _eq(is_opening_position) if is_opening_position is not None else None,
+        "isETF": _eq(is_etf) if is_etf is not None else None,
+        "isIndex": _eq(is_index) if is_index is not None else None,
+        "isVolumeGreaterThanOpenInterest": _eq(is_volume_gt_oi) if is_volume_gt_oi is not None else None,
+        # Threshold filters
+        "size": _gte(min_size) if min_size is not None else None,
+        "volume": _gte(min_volume) if min_volume is not None else None,
+        "openInterest": _gte(min_open_interest) if min_open_interest is not None else None,
+        "impliedVolatility": _gte(min_iv) if min_iv is not None else None,
+        "bidAskSpreadInCents": _gte(int(min_bid_ask_spread * 100)) if min_bid_ask_spread is not None else None,
+        "moneynessDegreeInPercent": _gte(min_moneyness_pct) if min_moneyness_pct is not None else None,
+        "moneynessDegreeInCents": _gte(int(min_moneyness_dollars * 100)) if min_moneyness_dollars is not None else None,
+        "fractionalDaysToExpiration": _lte(max_dte) if max_dte is not None else None,
+        # Greek thresholds
+        "greekDelta": (
+            {"filterOperationType": "BETWEEN", "value": [min_delta, max_delta]}
+            if (min_delta is not None and max_delta is not None)
+            else _gte(min_delta) if min_delta is not None
+            else _lte(max_delta) if max_delta is not None
+            else None
+        ),
+        "greekGamma": _gte(min_gamma) if min_gamma is not None else None,
+        "greekTheta": _gte(min_theta) if min_theta is not None else None,
+        "greekVega": _gte(min_vega) if min_vega is not None else None,
+        "greekCharm": _gte(min_charm) if min_charm is not None else None,
+        "greekVanna": _gte(min_vanna) if min_vanna is not None else None,
+        # Multi-select lists
+        "sentimentType": _eq([s.value for s in sentiment_type]) if sentiment_type else None,
+        "tradeType": _eq(trade_type) if trade_type else None,
+        "exchangeType": _eq(exchange_type) if exchange_type else None,
+        "sectorType": _eq(sector) if sector else None,
+        "industryType": _eq(industry) if industry else None,
+        "tradeConsolidationType": _eq(trade_consolidation_type) if trade_consolidation_type else None,
+    }
     try:
         with tool_context(
             "order_flow",
             ticker=ticker,
             date=date,
             expiration_date=expiration_date,
-            filter_updates={
-                "contractType": _eq(contract_type.value) if contract_type is not None else None,
-                "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
-                "tradeSideCodeType": _eq([t.value for t in trade_side]) if trade_side else None,
-                "premiumInCents": (
-                    {
-                        "filterOperationType": "GREATER_THAN_OR_EQUAL_TO",
-                        "value": int(min_premium * 100),
-                    }
-                    if min_premium is not None
-                    else None
-                ),
-                "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
-            },
+            filter_updates=filter_updates,
         ) as ctx:
             data = ctx.client.fetch_consolidated_flow(ctx.tool_spec.tool_id)
         return _fmt_order_flow(data, last_n)
