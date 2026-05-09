@@ -241,20 +241,51 @@ All tools work with any optionable ticker. Just pass `ticker="AAPL"` (or whateve
 > qd_get_exposure_by_strike(ticker="TSLA", expiration_date="2026-04-17")
 ```
 
-### Historical Data
+### Historical Data + Time Scrubber
 
-All tools support historical analysis. Either pass `date=` to any tool, or use `qd_set_page_date` to switch context:
+All tools support historical analysis. Set context once via `qd_set_page_date` and subsequent calls inherit it (the page filter is sticky as of v0.3.0):
 
 ```
-> Set the date to 2026-03-26 and show me the GEX walls at 10:00 AM
+> Switch to RKLB on 2026-05-08, then show me the gamma walls
 
-> qd_set_page_date(date="2026-03-26")
-> qd_get_exposure_by_strike(greek_type="GAMMA", time_minutes=600)
+> qd_set_page_date(date="2026-05-08", ticker="RKLB", expiration_date="2026-05-15")
+> qd_get_exposure_by_strike()    # inherits RKLB / 5/8 / 5/15
+> qd_get_max_pain()                # still RKLB / 5/8 / 5/15
 ```
 
-Time scrubbing: `time_minutes` = minutes from midnight (570 = 9:30 AM, 720 = 12:00 PM, 960 = 4:00 PM).
+**Persistent intraday scrubber** — set a tool to a specific moment of the trading day and the chart in your QuantData browser updates live:
+
+```
+> Show me the GEX walls at 11:00 AM yesterday
+
+> qd_set_tool_time("exposure_by_strike", "11:00")    # accepts "9:30", "1:30 PM", "16:00"
+> qd_get_exposure_by_strike()                         # data scrubbed to 11:00 AM
+> qd_reset_to_live("exposure_by_strike")              # back to most recent
+```
 
 **Note:** `date` must be a valid trading day (not weekends or market holidays).
+
+### Filter Groups (v0.3.0)
+
+QuantData's filter groups are server-side, persistent, named filter sets that attach to tools. Once attached, the filter is AND'd onto every fetch — visible and editable in the QuantData web UI alongside what the LLM is doing.
+
+```
+> Save a filter group that excludes complex spreads, tied trades, and floor trades.
+  Apply it to net_drift.
+
+> qd_save_filter_group(
+    name="clean_signal",
+    conditions=[
+      {"field": "IS_COMPLEX",   "op": "==", "value": False},
+      {"field": "IS_TIED",      "op": "==", "value": False},
+      {"field": "IS_FLOOR",     "op": "==", "value": False},
+      {"field": "IS_CANCELLED", "op": "==", "value": False},
+    ],
+  )
+> qd_apply_filter_group("net_drift", "clean_signal")
+```
+
+After this, every `qd_get_net_drift(...)` call automatically AND's those four conditions. Edit incrementally with `qd_add_filter_clause`, `qd_update_filter_clause`, `qd_remove_filter_clause`. Discover community filters with `qd_search_public_filter_groups`. Field/operator catalog: `qd_list_filter_fields`.
 
 ## How It Works
 
