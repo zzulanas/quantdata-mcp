@@ -258,7 +258,7 @@ class QuantDataClient:
         self,
         page_id: str,
         session_date: str,
-        ticker: str = "SPX",
+        ticker: str | list[str] = "SPX",
         expiration_date: str | None = None,
     ) -> bool:
         """Set page-level filters (date, ticker, expiration) for all tools on a page.
@@ -266,7 +266,10 @@ class QuantDataClient:
         Args:
             page_id: QuantData page ID
             session_date: Session date in YYYY-MM-DD format
-            ticker: Ticker symbol (default: SPX). Any optionable ticker works.
+            ticker: Single ticker (``"SPY"``) or a list of tickers
+                (``["SPY", "QQQ", "NVDA"]``) for market-scan-style
+                multi-ticker views (e.g. ``qd_get_gainers_losers``
+                with a watchlist). Default: SPX.
             expiration_date: Expiration date in YYYY-MM-DD format.
                              Defaults to session_date (0DTE). Set explicitly for
                              weeklies/monthlies.
@@ -277,21 +280,26 @@ class QuantDataClient:
         if expiration_date is None:
             expiration_date = session_date
 
+        # The wire format is always a list — wrap a single string for
+        # caller convenience.
+        ticker_list = ticker if isinstance(ticker, list) else [ticker]
+
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
 
         payload = {
             "id": page_id,
             "expirationDate": {"filterOperationType": "EQUALS", "value": expiration_date},
             "sessionDate": {"filterOperationType": "EQUALS", "value": session_date},
-            "ticker": {"filterOperationType": "EQUALS", "value": [ticker]},
+            "ticker": {"filterOperationType": "EQUALS", "value": ticker_list},
             "createdTime": now_ms,
             "lastUpdatedTime": now_ms,
         }
 
         try:
             self._make_request("PUT", "page-filter", json=payload, timeout=10)
+            ticker_label = ticker_list[0] if len(ticker_list) == 1 else f"{len(ticker_list)} tickers"
             logger.info(
-                f"Page filter set: page={page_id[:8]}... date={session_date} ticker={ticker}"
+                f"Page filter set: page={page_id[:8]}... date={session_date} ticker={ticker_label}"
             )
             return True
         except (QuantDataAuthError, QuantDataRateLimitError):

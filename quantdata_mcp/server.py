@@ -2754,22 +2754,55 @@ def qd_get_news_articles(
 
 @mcp.tool()
 def qd_get_gainers_losers(
+    watchlist: list[str] | None = None,
     sectors: list[str] | None = None,
     industries: list[str] | None = None,
     top_n: int = 10,
 ) -> str:
-    """Get the market-wide bullish / bearish premium leaders.
+    """Get per-ticker bullish / bearish premium aggregates.
 
-    Server aggregates per-ticker bullish + bearish premium across the
-    options market and returns the top tickers each side. Useful for
-    "what's flowing today across the whole market" questions.
+    The QuantData server aggregates premium per ticker, scoped to whatever
+    tickers the page filter is set to. By default the response only covers
+    the active page's single ticker — pass ``watchlist`` to set a
+    multi-ticker page filter for this call and get a true market-scan view.
 
     Args:
+        watchlist: List of tickers to scan (e.g. ``["SPY", "QQQ", "NVDA",
+            "TSLA", "AAPL"]``). When set, the page filter is updated to
+            cover all of them for this call. The page filter is sticky, so
+            it stays on the watchlist after the call until you change it
+            again. ``None`` (default) leaves the page filter alone — you
+            get just the active page's ticker.
         sectors: Filter to specific sectors (e.g. ``["TECHNOLOGY"]``).
         industries: Filter to specific industries.
         top_n: Number of tickers per side (bullish + bearish columns).
+
+    Example::
+
+        # Mag 7 + index ETFs scan
+        qd_get_gainers_losers(
+            watchlist=["SPY", "QQQ", "NVDA", "TSLA", "AAPL", "MSFT", "GOOG", "META"],
+            top_n=8,
+        )
     """
     try:
+        # If a watchlist is supplied, override the page filter ticker for
+        # this call (and onward — page filter is sticky as of v0.3.0).
+        if watchlist:
+            from quantdata_mcp._context import _active_page
+
+            session = _active_page.get("session_date") or _today()
+            exp = _active_page.get("expiration_date")
+            _get_client().set_page_filter(
+                _get_page_id(),
+                session_date=session,
+                ticker=watchlist,
+                expiration_date=exp,
+            )
+            # Don't update the active-page cache here — the cache is for
+            # single-ticker context inheritance, and a watchlist isn't
+            # meaningful as inherited context for other tools.
+
         filter_updates: dict[str, dict[str, Any] | None] = {
             "sectorType": _eq(sectors) if sectors else None,
             "industryType": _eq(industries) if industries else None,
@@ -2777,6 +2810,10 @@ def qd_get_gainers_losers(
         with tool_context(
             "gainers_losers",
             filter_updates=filter_updates,
+            # We just set the page filter explicitly above (or it's the
+            # caller's existing context); skip the redundant set inside
+            # tool_context.
+            skip_page_filter=bool(watchlist),
         ) as ctx:
             data = ctx.client.fetch_gainers_losers(ctx.tool_spec.tool_id)
         return _fmt_gainers_losers(data, top_n=top_n)

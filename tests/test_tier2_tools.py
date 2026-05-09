@@ -283,6 +283,40 @@ def test_news_articles_wrapper_builds_filter_dict(
     assert apply_filter["title"]["value"] == "rocket"
 
 
+def test_gainers_losers_watchlist_sets_multi_ticker_page_filter(
+    make_tool_dto, mock_specs, gainers_losers_response
+) -> None:
+    """When a watchlist is passed, the wrapper sets a multi-ticker page
+    filter for the call so the response covers all listed tickers."""
+    from quantdata_mcp._context import clear_active_page
+
+    clear_active_page()
+    dto = make_tool_dto(
+        tool_id="tool-gainers_losers",
+        metadata_overrides={
+            "type": "OPTIONS_GAINERS_LOSERS_TABLE",
+            "filter": {
+                "sectorType": {"filterOperationType": "EQUALS", "value": []},
+                "industryType": {"filterOperationType": "EQUALS", "value": []},
+            },
+        },
+    )
+    client = MagicMock()
+    client.get_tool.return_value = dto
+    client.fetch_gainers_losers.return_value = gainers_losers_response
+    client._make_request.return_value = MagicMock(json=lambda: {"ok": True})
+
+    with patch.object(server, "_get_client", lambda: client), patch.object(
+        server, "_get_specs", lambda: mock_specs
+    ), patch.object(server, "_get_page_id", lambda: "page-abc"):
+        server.qd_get_gainers_losers(watchlist=["SPY", "QQQ", "NVDA"])
+
+    # Page filter set with a list ticker (not single string)
+    page_filter_calls = client.set_page_filter.call_args_list
+    assert page_filter_calls, "set_page_filter should have been called for the watchlist"
+    assert page_filter_calls[0].kwargs["ticker"] == ["SPY", "QQQ", "NVDA"]
+
+
 def test_gainers_losers_wrapper_passes_sector_filter(
     make_tool_dto, mock_specs, gainers_losers_response
 ) -> None:
