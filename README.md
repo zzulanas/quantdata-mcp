@@ -13,7 +13,7 @@ MCP server that gives AI agents (Claude Code, Claude Desktop, etc.) access to re
 
 **Supports any optionable ticker** — SPX, SPY, QQQ, AAPL, TSLA, and more. Not just 0DTE.
 
-**Available data:** GEX/DEX/CEX/VEX exposure walls, exposure term structure, net drift, max pain, IV rank, trade side statistics, open interest, net flow, consolidated order flow, contract OHLCV, and contract statistics.
+**Available data:** GEX/DEX/CEX/VEX exposure walls, exposure term structure, net drift, max pain (instantaneous + per-expiration), IV rank, IV skew, IV term structure, volatility drift (ARV vs IV), trade side statistics, open interest (per strike, per expiration, over time, day-over-day change), net flow, consolidated + unconsolidated order flow, contract OHLCV, and contract statistics.
 
 **Documentation:** see [GETTING_STARTED.md](GETTING_STARTED.md) for a click-by-click walkthrough.
 
@@ -68,7 +68,9 @@ quantdata-mcp setup \
   --instance-id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```
 
-This creates a dedicated page on your QuantData account with 11 data tools and saves your config to `~/.quantdata-mcp/config.json`.
+This creates a dedicated page on your QuantData account with 19 data tools and saves your config to `~/.quantdata-mcp/config.json`.
+
+> **Upgrading from a previous install?** Re-run `quantdata-mcp setup` with your existing token + instance ID to register the 8 new Tier-1 tools (volatility skew, term structure, volatility drift, max pain over time, OI change, OI by expiration, OI over time, unconsolidated order flow). Existing tool IDs and page layout are preserved.
 
 ### 4. Add to Claude
 
@@ -153,6 +155,7 @@ Restart Claude Desktop. The QuantData tools will appear in your tool list.
 | Tool | Description | Key Settings |
 |------|-------------|--------------|
 | `qd_get_order_flow` | Consolidated order flow — individual large trades (40+ filters) | bool flags (`is_unusual`, `is_golden_sweep`, `is_opening_position`, ...), thresholds (`min_premium`, `min_size`, `min_volume`, `min_iv`, `max_dte`, ...), greek floors (`min_delta`, `min_gamma`, `min_theta`, ...), multi-selects (`sentiment_type`, `trade_type`, `sector`, `industry`, ...) |
+| `qd_get_unconsolidated_flow` | Raw per-trade order flow — every trade, no sweep/block rollup. Mirrors `qd_get_order_flow`'s 40+ filters (no `is_golden_sweep`; sorted by premium DESC). | Same filter set as `qd_get_order_flow` minus `is_golden_sweep` and `trade_consolidation_type` |
 | `qd_get_trade_side_stats` | Trade aggression: AA/A/M/B/BB breakdown | `data_mode`, `moneyness`, `strikes` |
 | `qd_get_contract_statistics` | Total premium, trade count, volume by call/put | `moneyness`, `trade_side`, `strikes` |
 
@@ -174,14 +177,21 @@ qd_get_order_flow(
 | Tool | Description | Key Settings |
 |------|-------------|--------------|
 | `qd_get_iv_rank` | IV rank vs historical range | `lookback_period`, `maturity`, `contract_type` |
+| `qd_get_volatility_skew` | IV across strikes per expiration (the "smile" / "smirk") | `contract_type`, `expirations`, `near_n` |
+| `qd_get_term_structure` | Expected move + IV grid across expirations | `contract_type`, `expirations`, `moneyness`, `min_delta`, `max_delta` |
+| `qd_get_volatility_drift` | Realized vs implied volatility (ARV vs IV) over time | `last_n` |
 | `qd_get_contract_price` | OHLCV price data for a specific contract | `strike` (required), `contract_type`, `aggregation` |
 
 ### Open Interest & Max Pain
 
-| Tool | Description |
-|------|-------------|
-| `qd_get_max_pain` | Max pain strike + distance from current price |
-| `qd_get_oi_by_strike` | Open interest distribution with near-ATM filtering |
+| Tool | Description | Key Settings |
+|------|-------------|--------------|
+| `qd_get_max_pain` | Max pain strike + distance from current price | — |
+| `qd_get_max_pain_over_time` | Max pain strike for each expiration of the chain | — |
+| `qd_get_oi_by_strike` | Open interest distribution with near-ATM filtering | `near_strike` |
+| `qd_get_oi_by_expiration` | Total call/put OI summed per expiration | `strikes` |
+| `qd_get_oi_over_time` | Call/put OI per session date — track build-up over time | `strikes`, `chart_type`, `last_n` |
+| `qd_get_oi_change` | Day-over-day OI change — biggest gainers / losers | `min_pct_change`, `contract_type`, `strikes`, `expirations`, `top_n` |
 
 ### Common Parameters
 
@@ -248,7 +258,7 @@ Time scrubbing: `time_minutes` = minutes from midnight (570 = 9:30 AM, 720 = 12:
 
 ## How It Works
 
-QuantData doesn't have an official API. This server uses reverse-engineered REST endpoints from their web app. Each user has "tools" (chart widgets) on "pages" — the setup command creates a dedicated page with all 11 data types so the MCP server can query them.
+QuantData doesn't have an official API. This server uses reverse-engineered REST endpoints from their web app. Each user has "tools" (chart widgets) on "pages" — the setup command creates a dedicated page with all 19 data types so the MCP server can query them.
 
 **Architecture:**
 ```
