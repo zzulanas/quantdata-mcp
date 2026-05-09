@@ -11,6 +11,9 @@ Usage:
 
 from __future__ import annotations
 
+import logging
+import sys
+import threading
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -27,8 +30,9 @@ from quantdata_mcp._context import (
     tool_context,
 )
 from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
-from quantdata_mcp.config import Config, config_exists, load_config
+from quantdata_mcp.config import Config, config_exists, load_config, save_config
 from quantdata_mcp.tools import (
+    TOOL_DEFINITIONS,
     AggregationPeriod,
     ChartType,
     ContractTypeFilter,
@@ -41,6 +45,14 @@ from quantdata_mcp.tools import (
     TradeSideCodeType,
     build_tool_specs,
 )
+
+# stdout is reserved for MCP JSON-RPC, so all logging goes to stderr.
+_log = logging.getLogger("quantdata_mcp.server")
+if not _log.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    _log.addHandler(_h)
+    _log.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
 # MCP Server + lazy-loaded config/client
@@ -86,24 +98,95 @@ def _try_load_config() -> Config | None:
         return None
 
 
+_load_lock = threading.Lock()
+
+
+def _auto_register_missing_tools(client: QuantDataClient, config: Config) -> bool:
+    """Create QuantData tool instances for any TOOL_DEFINITIONS missing from config.
+
+    Closes the upgrade gap: when a release adds new tool definitions, existing
+    users would otherwise have to re-run ``quantdata-mcp setup``. This helper
+    creates the missing instances on first server load, persists each new ID to
+    ``config.json`` immediately (so a partial failure leaves a consistent on-disk
+    state), and best-effort refreshes the page layout so the new tools appear
+    as tabs in the QuantData UI.
+
+    Returns True if any new tools were created.
+    """
+    if not config.page_id:
+        # Fresh install with no page — caller hasn't run `setup` yet, so we
+        # can't auto-create. Surface that via the existing config-missing path.
+        return False
+
+    missing = [name for name in TOOL_DEFINITIONS if name not in config.tools]
+    if not missing:
+        return False
+
+    _log.info(
+        "Auto-registering %d new tool(s) on page %s...",
+        len(missing),
+        config.page_id[:8],
+    )
+
+    created_any = False
+    for name in missing:
+        defn = TOOL_DEFINITIONS[name]
+        result = client.create_tool(page_id=config.page_id, tool_type=defn.tool_type.value)
+        if not result:
+            _log.warning("Failed to create tool '%s' — will retry on next start.", name)
+            continue
+        tool_id = result.get("response", {}).get("toolDTO", {}).get("id", "")
+        if not tool_id:
+            _log.warning("Tool '%s' created but no ID in response.", name)
+            continue
+        config.tools[name] = tool_id
+        # Persist after every successful create so a mid-loop failure leaves a
+        # consistent config (no orphan tool IDs in QuantData without a record).
+        save_config(config)
+        _log.info("  Registered '%s' (%s...)", name, tool_id[:8])
+        created_any = True
+
+    if created_any:
+        # Best-effort: rebuild the page layout to surface the new tabs in the
+        # QuantData web UI. Failures here are non-fatal — the data plane works
+        # regardless of whether the tabs are visible.
+        try:
+            tab_tools = [
+                (tid, TOOL_DEFINITIONS[name].label, TOOL_DEFINITIONS[name].tool_type.value)
+                for name, tid in config.tools.items()
+                if name in TOOL_DEFINITIONS
+            ]
+            client.update_page_layout(config.page_id, tab_tools)
+        except Exception as e:  # pragma: no cover - best effort
+            _log.warning("Page layout refresh failed (tools still usable): %s", e)
+
+    return created_any
+
+
 def _load() -> tuple[QuantDataClient, Config, dict[str, ToolSpec]]:
-    """Lazy-init client, config, and tool specs."""
+    """Lazy-init client, config, and tool specs.
+
+    Auto-registers any new ``TOOL_DEFINITIONS`` missing from the on-disk config
+    so users don't have to re-run ``setup`` after upgrading the package.
+    """
     global _client, _config, _specs
-    if _client is None:
-        if not config_exists():
-            raise RuntimeError(
-                "Not configured yet. Please run "
-                "`quantdata-mcp setup --auth-token <TOKEN> --instance-id <INSTANCE_ID>` "
-                "before starting the server (see README for credential lookup)."
+    with _load_lock:
+        if _client is None:
+            if not config_exists():
+                raise RuntimeError(
+                    "Not configured yet. Please run "
+                    "`quantdata-mcp setup --auth-token <TOKEN> --instance-id <INSTANCE_ID>` "
+                    "before starting the server (see README for credential lookup)."
+                )
+            _config = load_config()
+            _client = QuantDataClient(
+                auth_token=_config.auth_token,
+                instance_id=_config.instance_id,
+                max_retries=2,
+                retry_delay=0.5,
             )
-        _config = load_config()
-        _specs = build_tool_specs(_config.tools)
-        _client = QuantDataClient(
-            auth_token=_config.auth_token,
-            instance_id=_config.instance_id,
-            max_retries=2,
-            retry_delay=0.5,
-        )
+            _auto_register_missing_tools(_client, _config)
+            _specs = build_tool_specs(_config.tools)
     assert _config is not None
     return _client, _config, _specs
 

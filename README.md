@@ -70,7 +70,7 @@ quantdata-mcp setup \
 
 This creates a dedicated page on your QuantData account with 19 data tools and saves your config to `~/.quantdata-mcp/config.json`.
 
-> **Upgrading from a previous install?** Re-run `quantdata-mcp setup` with your existing token + instance ID to register the 8 new Tier-1 tools (volatility skew, term structure, volatility drift, max pain over time, OI change, OI by expiration, OI over time, unconsolidated order flow). Existing tool IDs and page layout are preserved.
+> **Upgrading from a previous install?** Just upgrade the package — the server auto-registers any new tool definitions (e.g. the 8 Tier-1 additions in this release) on first start. Existing tool IDs and page layout are preserved. Re-running `quantdata-mcp setup` is no longer required when a release adds new tools; only run it again if you need to refresh an expired auth token.
 
 ### 4. Add to Claude
 
