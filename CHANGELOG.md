@@ -2,6 +2,42 @@
 
 All notable changes to `quantdata-mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-05-09
+
+User-managed named workspaces. Lets you create dedicated QuantData
+pages from the LLM, populate them with the tools you care about, and
+get a browser URL to open alongside the LLM session for the same
+browser-LLM symbiosis we already have on the canonical surface. The
+killer use-case is reusable scratch-pads — *"set up a TSLA earnings
+workspace"* once, then *"run my TSLA workspace"* every time you want
+the snapshot.
+
+### Added — 5 new MCP tools
+
+| Tool | What |
+|---|---|
+| `qd_create_page(name, label, ticker, date, expiration_date)` | Create a new QuantData page, optionally seed its page filter, persist the mapping. Returns the browser URL. |
+| `qd_list_pages()` | List user-managed pages with name, label, URL, page filter, and attached tools. |
+| `qd_add_tool_to_page(page_name, tool_canonical_name)` | Create a fresh tool instance of the given canonical type on the page (with its own independent filter), refresh the page layout so it appears as a tab in the QuantData UI. |
+| `qd_run_page(page_name)` | Set the page's saved filter, iterate every tool on the page, fetch + format each one, concatenate with section headers. Like `qd_get_market_snapshot` but scoped to the workspace. |
+| `qd_delete_page(page_name, delete_tools=False)` | Tear down the page; optionally cascade to delete the tool instances on it. |
+
+### Added — under the hood
+
+- New `quantdata_mcp/pages.py` module with: page record schema, name validation (`/^[a-z0-9_]{1,64}$/`), lookup helpers, `RUNNABLE_TOOLS` registry mapping 14 canonical tool names to their `fetch_*` + formatter + per-formatter kwargs (e.g. `greek_type="GAMMA"` for exposure tools).
+- `Config.pages: list[dict]` field persisted to `~/.quantdata-mcp/config.json`. Schema documented in `pages.make_page_record`.
+- `client.delete_page(page_id)` and `client.delete_tool(tool_id)` for the cleanup paths.
+
+### Tested
+
+- 299 tests passing (268 + 31 new in `tests/test_managed_pages.py`).
+- Live end-to-end lifecycle verified against the QuantData API: created NVDA daily watch workspace → added 4 tools → `qd_run_page` returned NVDA's full morning snapshot (Net Drift +$8.15M cumulative bullish, GEX call wall cluster $215-$220, max-pain term structure, IV Rank ~62% NORMAL).
+
+### Notes for upgraders
+
+- Just upgrade the package — no setup re-run needed. The 5 new MCP tools become available immediately. User-managed pages don't auto-register (you create them explicitly).
+- `qd_run_page` excludes a few tool types from the batch view to keep output bounded: `order_flow` (too filter-rich for a default view), `heat_map` / `interval_map` (multi-MB raw payloads), `news_articles` / `equity_prints` (specialty surfaces). Add them to a page with `qd_add_tool_to_page` if you want; `qd_run_page` will skip them with a note.
+
 ## [0.4.0] — 2026-05-09
 
 Rounds out the canonical tool surface with 7 broader-market-context
@@ -119,6 +155,7 @@ Same filter set is mirrored on `qd_get_unconsolidated_flow` (minus `is_golden_sw
 
 First public PyPI release. See git history for details.
 
+[0.5.0]: https://github.com/zzulanas/quantdata-mcp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/zzulanas/quantdata-mcp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/zzulanas/quantdata-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/zzulanas/quantdata-mcp/releases/tag/v0.2.0
