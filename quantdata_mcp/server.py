@@ -31,6 +31,11 @@ from quantdata_mcp._context import (
 )
 from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
 from quantdata_mcp.config import Config, config_exists, load_config, save_config
+from quantdata_mcp.filter_groups import (
+    GROUP_TYPES,
+    build_filter_tree,
+    summarise_filter_tree,
+)
 from quantdata_mcp.filters import build_order_flow_filter
 from quantdata_mcp.tools import (
     TOOL_DEFINITIONS,
@@ -2281,6 +2286,430 @@ def qd_get_unconsolidated_flow(
         return AUTH_ERROR_MESSAGE
     except Exception as e:
         return format_error("unconsolidated flow", e)
+
+
+# ---------------------------------------------------------------------------
+# Filter groups — server-side persistent named filter sets
+# ---------------------------------------------------------------------------
+#
+# QuantData filter groups are first-class persistent objects. Each group has a
+# tree of conditions (typically one AND-group of leaves) and a `type` from the
+# enum {OPTION_TRADES_UNCONSOLIDATED, OPTION_TRADES_CONSOLIDATED, NEWS_ARTICLES}.
+# Groups attach to tools via the tool DTO's `filterGroupIds` array — once
+# attached, the group is AND'd onto every fetch alongside `metadata.filter`.
+
+# Tool types to probe when resolving a filter-group name → ID. The QuantData
+# listing endpoint is per-tool-type and the server's index doesn't uniformly
+# expose every group on every tool type (likely propagation lag), so we walk
+# a curated set of representative tools and union the results.
+_RESOLVE_PROBE_TOOL_TYPES = (
+    "OPTIONS_NET_DRIFT_CHART",                  # surfaces OPTION_TRADES_UNCONSOLIDATED reliably
+    "OPTIONS_ORDER_FLOW_UNCONSOLIDATED_TABLE",  # ditto, plus its own variants
+    "OPTIONS_ORDER_FLOW_CONSOLIDATED_TABLE",   # OPTION_TRADES_CONSOLIDATED
+    "OPTIONS_NET_FLOW_CHART",                   # extra coverage for trades
+    "NEWS_ARTICLE_LISTING",                     # NEWS_ARTICLES (future-proof)
+)
+
+_UUID_RE = __import__("re").compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    __import__("re").IGNORECASE,
+)
+
+
+def _resolve_filter_group(
+    ref: str, *, hint_group_type: str | None = None
+) -> dict[str, Any] | None:
+    """Resolve a filter-group reference (UUID or name) to a full DTO.
+
+    If ``ref`` is UUID-shaped, fetches by ID directly. Otherwise enumerates
+    the user's groups across multiple representative tool types and matches
+    by name. Uses several probe types because the listing endpoint's index
+    doesn't always include every group under every tool type immediately
+    after creation.
+    """
+    client = _get_client()
+    if _UUID_RE.match(ref):
+        return client.get_filter_group(ref)
+
+    seen_ids: set[str] = set()
+    for tool_type in _RESOLVE_PROBE_TOOL_TYPES:
+        groups = client.list_filter_groups(tool_type)
+        for g in groups:
+            gid = g.get("id", "")
+            if gid in seen_ids:
+                continue
+            seen_ids.add(gid)
+            if g.get("name") == ref:
+                return g
+        if hint_group_type:
+            # If caller hinted a type, we can stop after the first matching
+            # probe. Otherwise we walk the full list to be thorough.
+            break
+    return None
+
+
+def _resolve_tool_id(tool_name_or_id: str) -> str:
+    """Accept either a canonical tool name (``"net_drift"``) from the spec
+    registry or a raw tool ID. Returns the ID."""
+    specs = _get_specs()
+    if tool_name_or_id in specs:
+        return specs[tool_name_or_id].tool_id
+    return tool_name_or_id
+
+
+def _summarise_group(g: dict[str, Any]) -> str:
+    """One-line render of a filter group for list output."""
+    name = g.get("name", "?")
+    gid = g.get("id", "")[:8]
+    gtype = g.get("type", "?")
+    pub = "🌐" if g.get("isPublic") else "🔒"
+    desc = (g.get("description") or "").splitlines()[0][:60]
+    summary = summarise_filter_tree(g.get("filter") or {})
+    if len(summary) > 100:
+        summary = summary[:97] + "..."
+    return f"{pub} {name!r} [{gid}…] type={gtype}\n   filter: {summary}" + (
+        f"\n   {desc}" if desc else ""
+    )
+
+
+@mcp.tool()
+def qd_list_filter_groups(tool_type: str = "order_flow") -> str:
+    """List the user's saved filter groups applicable to a given tool type.
+
+    Filter groups are server-side, persistent, named filter sets that can be
+    attached to one or more canonical tools. Once attached, the group is
+    AND'd onto every fetch from that tool.
+
+    Args:
+        tool_type: Either a canonical name (``"order_flow"``,
+            ``"unconsolidated_flow"``, ``"net_drift"``, ``"net_flow"``, etc.)
+            or a raw QuantData tool type (``"OPTIONS_ORDER_FLOW_..."``).
+            Default: ``"order_flow"``.
+    """
+    try:
+        # Resolve canonical name → tool type via TOOL_DEFINITIONS
+        defn = TOOL_DEFINITIONS.get(tool_type)
+        full_type = defn.tool_type.value if defn else tool_type
+        groups = _get_client().list_filter_groups(full_type)
+        if not groups:
+            return f"No filter groups for tool type {full_type}."
+        lines = [f"Filter Groups for {full_type} ({len(groups)} total)\n"]
+        for g in groups:
+            lines.append(_summarise_group(g))
+        return "\n\n".join(lines)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"list_filter_groups({tool_type})", e)
+
+
+@mcp.tool()
+def qd_search_public_filter_groups(
+    group_type: str = "OPTION_TRADES_UNCONSOLIDATED",
+    query: str | None = None,
+    top_n: int = 20,
+) -> str:
+    """Browse community / public filter groups for inspiration or cloning.
+
+    Args:
+        group_type: One of ``OPTION_TRADES_UNCONSOLIDATED``,
+            ``OPTION_TRADES_CONSOLIDATED``, ``NEWS_ARTICLES``. Default:
+            ``OPTION_TRADES_UNCONSOLIDATED`` (the most populated category).
+        query: Optional case-insensitive substring filter applied to the
+            group's name + description. ``None`` returns everything.
+        top_n: Cap the number of rendered groups (default 20).
+    """
+    if group_type not in GROUP_TYPES:
+        return (
+            f"Unknown group_type {group_type!r}. Use one of: "
+            f"{', '.join(sorted(GROUP_TYPES))}"
+        )
+    try:
+        groups = _get_client().list_public_filter_groups(group_type)
+        if query:
+            q = query.lower()
+            groups = [
+                g for g in groups
+                if q in (g.get("name", "") + " " + (g.get("description") or "")).lower()
+            ]
+        if not groups:
+            return (
+                f"No public filter groups for {group_type}"
+                + (f" matching {query!r}" if query else "") + "."
+            )
+        groups = groups[:top_n]
+        lines = [f"Public Filter Groups — {group_type} ({len(groups)} shown)\n"]
+        for g in groups:
+            lines.append(_summarise_group(g))
+        return "\n\n".join(lines)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("search_public_filter_groups", e)
+
+
+@mcp.tool()
+def qd_get_filter_group(group_id_or_name: str) -> str:
+    """Show the full details of a single filter group by ID or name.
+
+    Resolves a name → ID by enumerating the user's groups across all 3
+    group types. Pass a UUID to skip the lookup.
+    """
+    try:
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        return _summarise_group(g)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"get_filter_group({group_id_or_name!r})", e)
+
+
+@mcp.tool()
+def qd_save_filter_group(
+    name: str,
+    conditions: list[dict[str, Any]],
+    group_type: str = "OPTION_TRADES_UNCONSOLIDATED",
+    description: str = "",
+    public: bool = False,
+) -> str:
+    """Create a new filter group and populate it with the given conditions.
+
+    Conditions are a flat list of ``{field, op, value}`` dicts; the server-side
+    representation becomes one AND-group at the root. Examples::
+
+        # Cleaner directional signal — exclude noise trades
+        qd_save_filter_group(
+            name="exclude_tied_complex",
+            conditions=[
+                {"field": "IS_COMPLEX", "op": "EQUALS", "value": False},
+                {"field": "IS_TIED",    "op": "EQUALS", "value": False},
+                {"field": "IS_FLOOR",   "op": "EQUALS", "value": False},
+            ],
+            description="Cleaner directional signal — Net Drift / Net Flow",
+        )
+
+        # Premium SPY sweeps with a delta floor
+        qd_save_filter_group(
+            name="spy_directional_premium",
+            conditions=[
+                {"field": "TICKER",          "op": "==",  "value": "SPY"},
+                {"field": "PREMIUM_IN_CENTS", "op": ">=", "value": 1_000_000},
+                {"field": "GREEK_DELTA",      "op": ">=", "value": 0.30},
+            ],
+        )
+
+    Field names accept any case (``IS_COMPLEX`` / ``is_complex`` / ``isComplex``).
+    Operators accept aliases (``"=="``, ``"!="``, ``">="``, ``"<="``, ``"gte"``,
+    ``"contains"``, etc.).
+
+    Args:
+        name: Display name for the group (no uniqueness enforcement on the
+            server side, but the LLM should pick distinctive names).
+        conditions: Flat list of ``{field, op, value}`` dicts.
+        group_type: One of ``OPTION_TRADES_UNCONSOLIDATED`` (default),
+            ``OPTION_TRADES_CONSOLIDATED``, ``NEWS_ARTICLES``.
+        description: Free-text description (shown in the QuantData UI).
+        public: When True, the group is visible in
+            ``qd_search_public_filter_groups`` for other users.
+    """
+    if group_type not in GROUP_TYPES:
+        return f"Unknown group_type {group_type!r}. Valid: {', '.join(sorted(GROUP_TYPES))}"
+    try:
+        tree = build_filter_tree(conditions)
+    except ValueError as e:
+        return f"Invalid condition: {e}"
+    try:
+        client = _get_client()
+        dto = client.create_filter_group(
+            name=name, group_type=group_type, description=description, is_public=public,
+        )
+        if dto is None:
+            return "Failed to create filter group (see server logs)."
+        # The create returns an empty filter — populate it via PUT.
+        dto["filter"] = tree
+        updated = client.update_filter_group(dto)
+        if updated is None:
+            return f"Created group {dto.get('id', '')[:8]}... but failed to populate conditions."
+        return (
+            f"Saved filter group {name!r} ({updated.get('id', '')[:8]}...). "
+            f"Filter: {summarise_filter_tree(tree)}"
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"save_filter_group({name!r})", e)
+
+
+@mcp.tool()
+def qd_update_filter_group(
+    group_id_or_name: str,
+    name: str | None = None,
+    conditions: list[dict[str, Any]] | None = None,
+    description: str | None = None,
+    public: bool | None = None,
+) -> str:
+    """Update fields on an existing filter group. Only provided args are
+    changed; ``None`` leaves the field as-is. Replaces the entire condition
+    list when ``conditions`` is provided (no per-clause add/remove).
+    """
+    try:
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        if name is not None:
+            g["name"] = name
+        if description is not None:
+            g["description"] = description
+        if public is not None:
+            g["isPublic"] = public
+        if conditions is not None:
+            try:
+                g["filter"] = build_filter_tree(conditions)
+            except ValueError as e:
+                return f"Invalid condition: {e}"
+        updated = _get_client().update_filter_group(g)
+        if updated is None:
+            return "Failed to update filter group (see server logs)."
+        return f"Updated. {_summarise_group(updated)}"
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"update_filter_group({group_id_or_name!r})", e)
+
+
+@mcp.tool()
+def qd_delete_filter_group(group_id_or_name: str) -> str:
+    """Delete a filter group permanently. Detaches it from any tools that
+    referenced it (server-side cascade, not a client-side sweep)."""
+    try:
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        ok = _get_client().delete_filter_group(g["id"])
+        return (
+            f"Deleted {g.get('name', '?')!r}." if ok
+            else f"Failed to delete {g.get('name', '?')!r} (see server logs)."
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"delete_filter_group({group_id_or_name!r})", e)
+
+
+@mcp.tool()
+def qd_apply_filter_group(tool_name: str, group_id_or_name: str) -> str:
+    """Attach a saved filter group to one of the canonical MCP tools.
+
+    Once attached, the saved filter is AND'd onto every fetch from that tool
+    automatically — no need to pass it through subsequent ``qd_get_*`` calls.
+    Idempotent: re-applying the same group is a no-op.
+
+    Args:
+        tool_name: Canonical tool name (``"net_drift"``, ``"order_flow"``,
+            ``"unconsolidated_flow"``, etc.) or a raw tool ID.
+        group_id_or_name: Filter group UUID or name.
+    """
+    try:
+        specs = _get_specs()
+        if tool_name not in specs and not _UUID_RE.match(tool_name):
+            return f"Unknown tool {tool_name!r}. Available: {', '.join(sorted(specs))}"
+        tool_id = _resolve_tool_id(tool_name)
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        ok = _get_client().attach_filter_group_to_tool(tool_id, g["id"])
+        if not ok:
+            return "Attach failed (see server logs)."
+        return f"Attached {g.get('name', '?')!r} to {tool_name}."
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(
+            f"apply_filter_group({tool_name!r}, {group_id_or_name!r})", e
+        )
+
+
+@mcp.tool()
+def qd_detach_filter_group(tool_name: str, group_id_or_name: str) -> str:
+    """Remove a previously-attached filter group from a tool. Idempotent."""
+    try:
+        specs = _get_specs()
+        if tool_name not in specs and not _UUID_RE.match(tool_name):
+            return f"Unknown tool {tool_name!r}. Available: {', '.join(sorted(specs))}"
+        tool_id = _resolve_tool_id(tool_name)
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        ok = _get_client().detach_filter_group_from_tool(tool_id, g["id"])
+        if not ok:
+            return "Detach failed (see server logs)."
+        return f"Detached {g.get('name', '?')!r} from {tool_name}."
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(
+            f"detach_filter_group({tool_name!r}, {group_id_or_name!r})", e
+        )
+
+
+@mcp.tool()
+def qd_clone_public_filter_group(
+    public_group_id: str,
+    new_name: str | None = None,
+) -> str:
+    """Copy a public/community filter group into the user's account.
+
+    Useful workflow: discover groups via ``qd_search_public_filter_groups``,
+    pick one whose strategy you like, clone it under your own name, then
+    ``qd_apply_filter_group`` it to a canonical tool.
+
+    Args:
+        public_group_id: UUID of a public group (from
+            ``qd_search_public_filter_groups`` output).
+        new_name: Override the cloned group's name. Defaults to
+            ``"Copy of <original name>"``.
+    """
+    try:
+        client = _get_client()
+        src = client.get_filter_group(public_group_id)
+        if src is None:
+            return f"Filter group {public_group_id!r} not found."
+        target_name = new_name or f"Copy of {src.get('name', 'unnamed')}"
+        new_dto = client.create_filter_group(
+            name=target_name,
+            group_type=src.get("type", "OPTION_TRADES_UNCONSOLIDATED"),
+            description=f"Cloned from public group {src.get('name', '?')!r}",
+            is_public=False,
+        )
+        if new_dto is None:
+            return "Failed to create cloned group."
+        # Copy the filter tree but regenerate keys to avoid collisions.
+        new_dto["filter"] = _regenerate_keys(src.get("filter") or {})
+        updated = client.update_filter_group(new_dto)
+        if updated is None:
+            return f"Cloned group {target_name!r} created but failed to copy filter tree."
+        return f"Cloned as {target_name!r} ({updated.get('id', '')[:8]}...)."
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"clone_public_filter_group({public_group_id!r})", e)
+
+
+def _regenerate_keys(tree: dict[str, Any]) -> dict[str, Any]:
+    """Walk a filter tree and replace every node's ``key`` UUID with a fresh
+    one. The server doesn't strictly require this for clones, but reusing
+    keys across groups is messy and risks future server-side dedupe weirdness.
+    """
+    if not isinstance(tree, dict):
+        return tree
+    import uuid as _uuid
+    out = dict(tree)
+    out["key"] = str(_uuid.uuid4())
+    if "filters" in out and isinstance(out["filters"], list):
+        out["filters"] = [_regenerate_keys(c) for c in out["filters"]]
+    return out
 
 
 # ---------------------------------------------------------------------------

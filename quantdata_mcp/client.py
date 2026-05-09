@@ -1221,6 +1221,144 @@ class QuantDataClient:
             logger.error(f"Failed to list pages: {e}")
             return []
 
+    # ------------------------------------------------------------------
+    # Filter groups (server-side persistent filter sets)
+    # ------------------------------------------------------------------
+
+    def list_filter_groups(self, tool_type: str) -> list[dict[str, Any]]:
+        """List the user's filter groups applicable to a given tool type.
+
+        The QuantData server maps tool types to applicable group types
+        internally (e.g. ``OPTIONS_NET_DRIFT_CHART`` → groups of type
+        ``OPTION_TRADES_UNCONSOLIDATED``). The returned list contains every
+        group the user owns that the server thinks applies.
+        """
+        try:
+            r = self._make_request("GET", f"filter-groups/tool-type/{tool_type}", timeout=10)
+            return r.json().get("response", {}).get("filterGroupDTOs", []) or []
+        except Exception as e:
+            logger.error(f"Failed to list filter groups for {tool_type}: {e}")
+            return []
+
+    def list_public_filter_groups(self, group_type: str) -> list[dict[str, Any]]:
+        """List public/community filter groups for a group type.
+
+        ``group_type`` is the filter-group enum (``OPTION_TRADES_UNCONSOLIDATED``,
+        ``OPTION_TRADES_CONSOLIDATED``, ``NEWS_ARTICLES``), NOT a tool type.
+        """
+        try:
+            r = self._make_request("GET", f"filter-groups/public?type={group_type}", timeout=10)
+            return r.json().get("response", {}).get("filterGroupDTOs", []) or []
+        except Exception as e:
+            logger.error(f"Failed to list public filter groups for {group_type}: {e}")
+            return []
+
+    def get_filter_group(self, group_id: str) -> dict[str, Any] | None:
+        """Fetch a single filter group by ID."""
+        try:
+            r = self._make_request("GET", f"filter-group/{group_id}", timeout=10)
+            return r.json().get("response", {}).get("filterGroupDTO")
+        except Exception as e:
+            logger.error(f"Failed to get filter group {group_id[:8]}...: {e}")
+            return None
+
+    def create_filter_group(
+        self,
+        *,
+        name: str,
+        group_type: str,
+        description: str = "",
+        is_public: bool = False,
+    ) -> dict[str, Any] | None:
+        """Create an empty filter group. Returns the new group's DTO.
+
+        The API's ``POST /filter-group`` returns the freshly-created DTO with
+        an empty ``filter`` tree. To add clauses, mutate the returned DTO and
+        call :meth:`update_filter_group`.
+        """
+        # The API requires a non-empty description. Match the web UI's default
+        # of stamping the creation date so callers don't have to think about it.
+        if not description:
+            description = f"Created via MCP on {datetime.now(UTC).strftime('%B %d, %Y')}"
+        payload = {
+            "name": name,
+            "description": description,
+            "isPublic": is_public,
+            "type": group_type,
+        }
+        try:
+            r = self._make_request("POST", "filter-group", json=payload, timeout=10)
+            dto = r.json().get("response", {}).get("filterGroupDTO")
+            if dto:
+                logger.info(f"Created filter group: {dto.get('id', '')[:8]}... ({name})")
+            return dto
+        except Exception as e:
+            logger.error(f"Failed to create filter group {name!r}: {e}")
+            return None
+
+    def update_filter_group(self, dto: dict[str, Any]) -> dict[str, Any] | None:
+        """Update a filter group. Pass the full DTO with modifications.
+
+        Used to change name/description/visibility/filter-tree. The API
+        replaces the whole record, so the caller must round-trip the
+        unchanged fields too (typically: GET, mutate, PUT).
+        """
+        try:
+            r = self._make_request("PUT", "filter-group", json=dto, timeout=10)
+            updated = r.json().get("response", {}).get("filterGroupDTO")
+            return updated
+        except Exception as e:
+            logger.error(f"Failed to update filter group {dto.get('id', '?')[:8]}...: {e}")
+            return None
+
+    def delete_filter_group(self, group_id: str) -> bool:
+        """Delete a filter group by ID."""
+        try:
+            self._make_request("DELETE", f"filter-group/{group_id}", timeout=10)
+            logger.info(f"Deleted filter group {group_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete filter group {group_id[:8]}...: {e}")
+            return False
+
+    def attach_filter_group_to_tool(self, tool_id: str, group_id: str) -> bool:
+        """Add ``group_id`` to a tool's ``filterGroupIds`` array, persisting
+        the attachment so future fetches AND the saved filter onto whatever
+        ``metadata.filter`` clauses the tool already has. Idempotent.
+        """
+        dto = self.get_tool(tool_id)
+        if dto is None:
+            return False
+        ids = list(dto.get("filterGroupIds") or [])
+        if group_id in ids:
+            return True
+        ids.append(group_id)
+        dto["filterGroupIds"] = ids
+        dto["lastUpdatedTime"] = int(__import__("time").time() * 1000)
+        try:
+            self._make_request("PUT", "tool", json=dto, timeout=10)
+            logger.info(f"Attached filter group {group_id[:8]}... to tool {tool_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to attach filter group: {e}")
+            return False
+
+    def detach_filter_group_from_tool(self, tool_id: str, group_id: str) -> bool:
+        """Remove ``group_id`` from a tool's ``filterGroupIds`` array."""
+        dto = self.get_tool(tool_id)
+        if dto is None:
+            return False
+        ids = [i for i in (dto.get("filterGroupIds") or []) if i != group_id]
+        dto["filterGroupIds"] = ids
+        dto["lastUpdatedTime"] = int(__import__("time").time() * 1000)
+        try:
+            self._make_request("PUT", "tool", json=dto, timeout=10)
+            logger.info(f"Detached filter group {group_id[:8]}... from tool {tool_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to detach filter group: {e}")
+            return False
+
     def close(self) -> None:
         """Close the session and cleanup resources"""
         if self.session:
