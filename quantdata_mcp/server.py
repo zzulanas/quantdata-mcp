@@ -1108,9 +1108,8 @@ def qd_get_order_flow(
     min_moneyness_pct: float | None = None,
     min_moneyness_dollars: float | None = None,
     max_dte: float | None = None,
-    # ----- Greek thresholds (GTE only, except delta which has both) -----
+    # ----- Greek thresholds (GTE only — the API allows one operator per field) -----
     min_delta: float | None = None,
-    max_delta: float | None = None,
     min_gamma: float | None = None,
     min_theta: float | None = None,
     min_vega: float | None = None,
@@ -1171,7 +1170,10 @@ def qd_get_order_flow(
         min_moneyness_pct: Minimum moneyness as a percentage (e.g. 5.0 for >=5% OTM/ITM).
         min_moneyness_dollars: Minimum moneyness in dollars (converted to cents internally).
         max_dte: Maximum days-to-expiration (fractional). Use 0 for 0DTE only.
-        min_delta / max_delta: Delta range (e.g. 0.30 to 0.70 for ATM-ish).
+        min_delta: Minimum delta (e.g. 0.30 to skip far-OTM noise). The API
+            accepts only one operator per greek field, so a delta range is
+            not directly supported — use ``min_delta`` to floor and pair with
+            ``moneyness`` if you need an upper bound.
         min_gamma: Minimum gamma.
         min_theta: Minimum theta (typically negative — pass e.g. -0.05 to skip the most decayed).
         min_vega: Minimum vega.
@@ -1211,14 +1213,8 @@ def qd_get_order_flow(
         "moneynessDegreeInPercent": _gte(min_moneyness_pct) if min_moneyness_pct is not None else None,
         "moneynessDegreeInCents": _gte(int(min_moneyness_dollars * 100)) if min_moneyness_dollars is not None else None,
         "fractionalDaysToExpiration": _lte(max_dte) if max_dte is not None else None,
-        # Greek thresholds
-        "greekDelta": (
-            {"filterOperationType": "BETWEEN", "value": [min_delta, max_delta]}
-            if (min_delta is not None and max_delta is not None)
-            else _gte(min_delta) if min_delta is not None
-            else _lte(max_delta) if max_delta is not None
-            else None
-        ),
+        # Greek thresholds — one operator per field, so all are GTE.
+        "greekDelta": _gte(min_delta) if min_delta is not None else None,
         "greekGamma": _gte(min_gamma) if min_gamma is not None else None,
         "greekTheta": _gte(min_theta) if min_theta is not None else None,
         "greekVega": _gte(min_vega) if min_vega is not None else None,

@@ -10,7 +10,8 @@ Coverage strategy:
 - One GTE test (min_size).
 - One LTE test (max_dte).
 - One float->cents conversion test (min_premium, min_bid_ask_spread).
-- One greek delta range test (BETWEEN when both bounds are set).
+- One greek delta floor test (min_delta — the API allows only one operator
+  per greek field, so there is no BETWEEN/range form).
 - One open-ended list test for free-form codes (trade_type, sector).
 - A "kitchen sink" test that combines several filters at once and asserts
   none of them clobber each other.
@@ -231,23 +232,6 @@ def test_min_delta_only_emits_gte(of_client, of_specs) -> None:
     }
 
 
-def test_max_delta_only_emits_lte(of_client, of_specs) -> None:
-    _call_order_flow(of_client, of_specs, max_delta=0.70)
-    assert _apply_filter(of_client)["greekDelta"] == {
-        "filterOperationType": "LESS_THAN_OR_EQUAL_TO",
-        "value": 0.70,
-    }
-
-
-def test_delta_range_emits_between(of_client, of_specs) -> None:
-    """When BOTH min and max delta are set, emit a BETWEEN clause."""
-    _call_order_flow(of_client, of_specs, min_delta=0.30, max_delta=0.70)
-    assert _apply_filter(of_client)["greekDelta"] == {
-        "filterOperationType": "BETWEEN",
-        "value": [0.30, 0.70],
-    }
-
-
 def test_min_gamma_emits_gte(of_client, of_specs) -> None:
     _call_order_flow(of_client, of_specs, min_gamma=0.001)
     assert _apply_filter(of_client)["greekGamma"]["filterOperationType"] == "GREATER_THAN_OR_EQUAL_TO"
@@ -325,7 +309,6 @@ def test_kitchen_sink_combination(of_client, of_specs) -> None:
         trade_type=["AUTO"],
         sector=["TECHNOLOGY"],
         min_delta=0.30,
-        max_delta=0.70,
         max_dte=14.0,
     )
     f = _apply_filter(of_client)
@@ -336,8 +319,8 @@ def test_kitchen_sink_combination(of_client, of_specs) -> None:
     assert f["tradeType"]["value"] == ["AUTO"]
     assert f["sectorType"]["value"] == ["TECHNOLOGY"]
     assert f["greekDelta"] == {
-        "filterOperationType": "BETWEEN",
-        "value": [0.30, 0.70],
+        "filterOperationType": "GREATER_THAN_OR_EQUAL_TO",
+        "value": 0.30,
     }
     assert f["fractionalDaysToExpiration"]["value"] == 14.0
 

@@ -88,7 +88,7 @@ def _gte(value: Any) -> dict[str, Any]:
 def _lte(value: Any) -> dict[str, Any]:
     """Return a QuantData ``LESS_THAN_OR_EQUAL_TO`` filter clause around ``value``.
 
-    Used for "maximum" thresholds (e.g. ``max_dte``, ``max_delta``).
+    Used for "maximum" thresholds (e.g. ``max_dte``).
     """
     return {"filterOperationType": "LESS_THAN_OR_EQUAL_TO", "value": value}
 
