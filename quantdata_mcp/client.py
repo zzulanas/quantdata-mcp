@@ -828,6 +828,181 @@ class QuantDataClient:
             return None
 
     # ------------------------------------------------------------------
+    # Data fetching -- PR 2 (Tier-1 expansion: vol surface + OI series + unconsolidated flow)
+    # ------------------------------------------------------------------
+
+    def fetch_volatility_skew(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Volatility Skew -- IV per strike around the spot, by expiration.
+
+        Args:
+            tool_id: Volatility Skew tool ID
+
+        Returns:
+            Skew data dict or None if failed. Shape:
+                response.stockPriceInCents
+                response.volatilitySkew -> {expDate: {strike_cents: {CALL/PUT: {iv}}}}
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/volatility-skew/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch volatility skew: {e}")
+            return None
+
+    def fetch_term_structure(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Term Structure -- IV / expected move across expirations.
+
+        Args:
+            tool_id: Term Structure tool ID
+
+        Returns:
+            Term structure data dict or None if failed. Shape:
+                response.stockPriceInCents
+                response.expectedMove -> {expDate: {CALL: cents, PUT: cents}}
+                response.termStructure -> nested IV grid per expiration / strike
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/term-structure/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch term structure: {e}")
+            return None
+
+    def fetch_volatility_drift(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Volatility Drift -- ARV / IV / spot over time.
+
+        Args:
+            tool_id: Volatility Drift tool ID
+
+        Returns:
+            Volatility drift dict or None if failed. Shape:
+                response.volatilityDrift -> {timestamp_ms: {arv, iv, stockPriceInCents}}
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/volatility-drift/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch volatility drift: {e}")
+            return None
+
+    def fetch_max_pain_over_time(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Max Pain over Time -- max-pain strike per expiration.
+
+        Args:
+            tool_id: Max Pain Over Time tool ID
+
+        Returns:
+            Data dict or None if failed. Shape:
+                response.stockPriceInCents
+                response.maxPainStrikePricesInCents -> {expDate: strike_cents}
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/max-pain/time/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch max pain over time: {e}")
+            return None
+
+    def fetch_oi_change(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Open Interest Change -- per-strike OI deltas vs prior session.
+
+        Args:
+            tool_id: Open Interest Change tool ID
+
+        Returns:
+            Data dict or None if failed. Shape:
+                response -> list of dicts with strike, contractType, expirationDate,
+                previousOpenInterest, currentOpenInterest, changeInOpenInterest,
+                percentChangeInOpenInterest, sessionDate, ticker
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/open-interest/change/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch OI change: {e}")
+            return None
+
+    def fetch_oi_by_expiration(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Open Interest by Expiration -- call/put OI summed per expiration.
+
+        Args:
+            tool_id: Open Interest by Expiration tool ID
+
+        Returns:
+            Data dict or None if failed. Shape:
+                response.expirationDatesToPutCallOpenInterest ->
+                    {expDate: {callOpenInterest, putOpenInterest}}
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/open-interest/expiration/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch OI by expiration: {e}")
+            return None
+
+    def fetch_oi_over_time(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Open Interest Over Time -- call/put OI per session date.
+
+        Args:
+            tool_id: Open Interest Over Time tool ID
+
+        Returns:
+            Data dict or None if failed. Shape:
+                response.sessionDatesToPutCallOpenInterest ->
+                    {sessionDate: {callOpenInterest, putOpenInterest}}
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/open-interest/time/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch OI over time: {e}")
+            return None
+
+    def fetch_unconsolidated_flow(self, tool_id: str) -> dict[str, Any] | None:
+        """Fetch Unconsolidated Order Flow -- raw individual trades (no rollup).
+
+        Same response shape as ``fetch_consolidated_flow`` (statistics + trades),
+        but every trade is shown individually instead of being merged into a
+        single sweep / block aggregate.
+
+        Args:
+            tool_id: Unconsolidated Order Flow tool ID
+
+        Returns:
+            Data dict or None if failed.
+        """
+        try:
+            response = self._make_request(
+                "GET", f"options/order-flow/unconsolidated/{tool_id}", timeout=30
+            )
+            result: dict[str, Any] = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch unconsolidated flow: {e}")
+            return None
+
+    # ------------------------------------------------------------------
     # Generic fetch by ToolSpec
     # ------------------------------------------------------------------
 

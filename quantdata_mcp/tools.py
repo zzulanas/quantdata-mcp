@@ -18,6 +18,15 @@ class ToolType(str, Enum):
     CONTRACT_STATISTICS = "OPTIONS_CONTRACT_STATISTICS_CHART"
     EXPOSURE_BY_EXPIRATION = "OPTIONS_EXPOSURE_BY_EXPIRATION_CHART"
     CONTRACT_PRICE_TIME = "OPTIONS_CONTRACT_PRICE_OVER_TIME_CHART"
+    # PR 2 — 8 new Tier-1 tools
+    VOLATILITY_SKEW = "OPTIONS_VOLATILITY_SKEW_CHART"
+    TERM_STRUCTURE = "OPTIONS_TERM_STRUCTURE_CHART"
+    VOLATILITY_DRIFT = "OPTIONS_VOLATILITY_DRIFT_CHART"
+    MAX_PAIN_OVER_TIME = "OPTIONS_MAX_PAIN_OVER_TIME_CHART"
+    OI_CHANGE = "OPTIONS_OPEN_INTEREST_CHANGE_TABLE"
+    OI_BY_EXPIRATION = "OPTIONS_OPEN_INTEREST_BY_EXPIRATION_CHART"
+    OI_OVER_TIME = "OPTIONS_OPEN_INTEREST_OVER_TIME_CHART"
+    ORDER_FLOW_UNCONSOLIDATED = "OPTIONS_ORDER_FLOW_UNCONSOLIDATED_TABLE"
 
 
 class GreekMode(str, Enum):
@@ -98,7 +107,7 @@ class ToolSpec:
     label: str
 
 
-# The 11 tools to create during setup
+# The 19 tools to create during setup (11 from PR 0, 8 added in PR 2)
 TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "exposure_by_strike": ToolDefinition(
         canonical_name="exposure_by_strike",
@@ -165,6 +174,55 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         tool_type=ToolType.CONTRACT_PRICE_TIME,
         endpoint="options/contract/price/time",
         label="Contract Price / Time",
+    ),
+    # ----- PR 2: 8 new Tier-1 tools -----
+    "volatility_skew": ToolDefinition(
+        canonical_name="volatility_skew",
+        tool_type=ToolType.VOLATILITY_SKEW,
+        endpoint="options/volatility-skew",
+        label="Volatility Skew",
+    ),
+    "term_structure": ToolDefinition(
+        canonical_name="term_structure",
+        tool_type=ToolType.TERM_STRUCTURE,
+        endpoint="options/term-structure",
+        label="Term Structure",
+    ),
+    "volatility_drift": ToolDefinition(
+        canonical_name="volatility_drift",
+        tool_type=ToolType.VOLATILITY_DRIFT,
+        endpoint="options/volatility-drift",
+        label="Volatility Drift",
+    ),
+    "max_pain_over_time": ToolDefinition(
+        canonical_name="max_pain_over_time",
+        tool_type=ToolType.MAX_PAIN_OVER_TIME,
+        endpoint="options/max-pain/time",
+        label="Max Pain / Time",
+    ),
+    "oi_change": ToolDefinition(
+        canonical_name="oi_change",
+        tool_type=ToolType.OI_CHANGE,
+        endpoint="options/open-interest/change",
+        label="Open Interest Change",
+    ),
+    "oi_by_expiration": ToolDefinition(
+        canonical_name="oi_by_expiration",
+        tool_type=ToolType.OI_BY_EXPIRATION,
+        endpoint="options/open-interest/expiration",
+        label="Open Interest by Expiration",
+    ),
+    "oi_over_time": ToolDefinition(
+        canonical_name="oi_over_time",
+        tool_type=ToolType.OI_OVER_TIME,
+        endpoint="options/open-interest/time",
+        label="Open Interest / Time",
+    ),
+    "unconsolidated_flow": ToolDefinition(
+        canonical_name="unconsolidated_flow",
+        tool_type=ToolType.ORDER_FLOW_UNCONSOLIDATED,
+        endpoint="options/order-flow/unconsolidated",
+        label="Order Flow (Unconsolidated)",
     ),
 }
 
