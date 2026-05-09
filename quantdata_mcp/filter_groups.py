@@ -226,3 +226,182 @@ def _summarise_node(node: dict[str, Any]) -> str:
     if node.get("conjunctionType") == "OR":
         return sep.join(f"({p})" if " AND " in p else p for p in parts)
     return sep.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Tree traversal + mutation helpers (used by surgical clause-edit MCP tools)
+# ---------------------------------------------------------------------------
+
+# Sentinel for "argument not provided" so callers can pass ``None`` /
+# ``""`` / ``False`` as legitimate new values to ``update_leaf``.
+_SENTINEL_UNSET: Any = object()
+
+
+def is_leaf(node: dict[str, Any]) -> bool:
+    """A leaf node has a ``field`` key; an inner node has ``filters``."""
+    return isinstance(node, dict) and "field" in node
+
+
+def is_branch(node: dict[str, Any]) -> bool:
+    """An inner conjunction node (AND/OR group of children)."""
+    return isinstance(node, dict) and "conjunctionType" in node and "filters" in node
+
+
+def find_default_and_branch(tree: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the first AND-group child of the OR root, or ``None`` if there
+    isn't one yet. The "default" branch for new clauses goes here.
+    """
+    for child in tree.get("filters") or []:
+        if is_branch(child) and child.get("conjunctionType") == "AND":
+            return child
+    return None
+
+
+def ensure_default_and_branch(tree: dict[str, Any]) -> dict[str, Any]:
+    """Like :func:`find_default_and_branch` but creates the AND-group if
+    missing. Mutates ``tree`` in place. Returns the AND-group dict.
+    """
+    branch = find_default_and_branch(tree)
+    if branch is not None:
+        return branch
+    # Need to create it. Append a fresh AND-group to the OR root.
+    new_branch = {
+        "key": str(uuid.uuid4()),
+        "conjunctionType": "AND",
+        "filters": [],
+    }
+    tree.setdefault("filters", []).append(new_branch)
+    return new_branch
+
+
+def find_branch_by_key(tree: dict[str, Any], branch_key: str) -> dict[str, Any] | None:
+    """Search the tree for a branch (inner conjunction node) with the given
+    UUID key. Used to target a specific OR alternative for new clauses.
+    """
+    if not isinstance(tree, dict):
+        return None
+    if is_branch(tree) and tree.get("key") == branch_key:
+        return tree
+    for child in tree.get("filters") or []:
+        found = find_branch_by_key(child, branch_key)
+        if found is not None:
+            return found
+    return None
+
+
+def find_leaves(
+    tree: dict[str, Any],
+    *,
+    key: str | None = None,
+    field: str | None = None,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Return all matching leaves as (parent_branch, leaf) pairs.
+
+    Pass ``key`` to match a leaf's UUID exactly; pass ``field`` to match
+    every leaf with that ``field`` value (``field`` is normalised). Pass
+    both to match leaves satisfying both. Returns ``[]`` if nothing matches.
+    """
+    out: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    norm_field = normalise_field(field) if field else None
+
+    def walk(parent: dict[str, Any] | None, node: dict[str, Any]) -> None:
+        if is_leaf(node) and parent is not None:
+            if key is not None and node.get("key") != key:
+                return
+            if norm_field is not None and node.get("field") != norm_field:
+                return
+            out.append((parent, node))
+            return
+        if is_branch(node):
+            for child in node.get("filters") or []:
+                walk(node, child)
+
+    walk(None, tree)
+    return out
+
+
+def remove_leaves(
+    tree: dict[str, Any],
+    *,
+    key: str | None = None,
+    field: str | None = None,
+) -> int:
+    """Remove all matching leaves in place. Returns count removed.
+
+    Cleans up: if removing leaves leaves an AND-branch empty, the empty
+    branch is also pruned so the tree doesn't accumulate dead nodes.
+    """
+    matches = find_leaves(tree, key=key, field=field)
+    if not matches:
+        return 0
+    # Group by parent so we can mutate each parent's filters list once.
+    parents: dict[int, dict[str, Any]] = {id(p): p for p, _ in matches}
+    leaves_by_parent: dict[int, list[dict[str, Any]]] = {}
+    for parent, leaf in matches:
+        leaves_by_parent.setdefault(id(parent), []).append(leaf)
+    for pid, parent in parents.items():
+        to_drop = leaves_by_parent[pid]
+        parent["filters"] = [c for c in parent.get("filters") or [] if c not in to_drop]
+
+    # Prune any branches that became empty.
+    def prune_empty(node: dict[str, Any]) -> bool:
+        """Return True if ``node`` should be removed by its parent."""
+        if not is_branch(node):
+            return False
+        node["filters"] = [
+            c for c in node.get("filters") or [] if not prune_empty(c)
+        ]
+        # Don't prune the root — empty roots are valid ("no clauses").
+        return False
+
+    prune_empty(tree)
+    return len(matches)
+
+
+def add_leaf(
+    tree: dict[str, Any],
+    *,
+    field: str,
+    op: str,
+    value: Any,
+    branch_key: str | None = None,
+) -> dict[str, Any]:
+    """Add a leaf to the specified branch (defaults to the first AND-group at
+    the root, creating one if needed). Returns the new leaf dict.
+    """
+    if branch_key is not None:
+        branch = find_branch_by_key(tree, branch_key)
+        if branch is None:
+            raise ValueError(f"branch {branch_key!r} not found in filter tree")
+    else:
+        branch = ensure_default_and_branch(tree)
+
+    leaf = {
+        "key": str(uuid.uuid4()),
+        "field": normalise_field(field),
+        "operationType": normalise_operator(op),
+        "value": serialise_value(value),
+    }
+    branch.setdefault("filters", []).append(leaf)
+    return leaf
+
+
+def update_leaf(
+    leaf: dict[str, Any],
+    *,
+    new_field: str | None = None,
+    new_op: str | None = None,
+    new_value: Any = _SENTINEL_UNSET,
+) -> dict[str, Any]:
+    """Mutate a single leaf in place. Pass only the fields you want to change.
+
+    ``new_value`` can legitimately be ``None`` / ``""`` / ``False``, so a
+    sentinel object distinguishes "unset" from "explicitly set to None."
+    """
+    if new_field is not None:
+        leaf["field"] = normalise_field(new_field)
+    if new_op is not None:
+        leaf["operationType"] = normalise_operator(new_op)
+    if new_value is not _SENTINEL_UNSET:
+        leaf["value"] = serialise_value(new_value)
+    return leaf

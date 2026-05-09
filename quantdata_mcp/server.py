@@ -33,8 +33,12 @@ from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
 from quantdata_mcp.config import Config, config_exists, load_config, save_config
 from quantdata_mcp.filter_groups import (
     GROUP_TYPES,
+    add_leaf,
     build_filter_tree,
+    find_leaves,
+    remove_leaves,
     summarise_filter_tree,
+    update_leaf,
 )
 from quantdata_mcp.filters import build_order_flow_filter
 from quantdata_mcp.tools import (
@@ -2695,6 +2699,206 @@ def qd_clone_public_filter_group(
         return AUTH_ERROR_MESSAGE
     except Exception as e:
         return format_error(f"clone_public_filter_group({public_group_id!r})", e)
+
+
+# ---------------------------------------------------------------------------
+# Surgical clause edits — add / remove / update individual conditions
+# without re-listing the whole filter. Mirrors the QuantData web UI's
+# per-clause +/× behaviour so users can edit either surface and the other
+# stays in sync.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def qd_add_filter_clause(
+    group_id_or_name: str,
+    field: str,
+    op: str,
+    value: Any,
+    branch_key: str | None = None,
+) -> str:
+    """Append a single clause to a saved filter group.
+
+    By default the clause is added to the first AND-group at the root
+    (the typical "all of these conditions must hold" location). Pass
+    ``branch_key`` to target a specific OR alternative when the group has
+    nested branches.
+
+    Args:
+        group_id_or_name: UUID or name of the filter group.
+        field: Field name (any case — ``IS_COMPLEX`` / ``is_complex`` /
+            ``isComplex`` all normalise).
+        op: Operator. Accepts canonical (``EQUALS``, ``GREATER_THAN_OR_EQUAL_TO``)
+            or aliases (``==``, ``>=``, ``gte``, ``contains``, ``!=``).
+        value: Python value — booleans, numbers, lists all serialised
+            correctly to QuantData's wire format.
+        branch_key: Optional UUID of a specific AND-branch to target. Look
+            it up via ``qd_get_filter_group`` if the group has multiple
+            OR alternatives.
+
+    Example::
+
+        # Bump an existing "clean signal" group with a $5K premium floor
+        qd_add_filter_clause(
+            "clean_signal", "PREMIUM_IN_CENTS", ">=", 500_000,
+        )
+    """
+    try:
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        tree = g.get("filter") or {"key": "", "conjunctionType": "OR", "filters": []}
+        try:
+            new_leaf = add_leaf(tree, field=field, op=op, value=value, branch_key=branch_key)
+        except ValueError as e:
+            return f"Add failed: {e}"
+        g["filter"] = tree
+        updated = _get_client().update_filter_group(g)
+        if updated is None:
+            return "Update failed (see server logs)."
+        return (
+            f"Added clause to {g.get('name', '?')!r}: "
+            f"{new_leaf['field']}{_OP_SYMBOL_FOR(new_leaf['operationType'])}{new_leaf['value']}\n"
+            f"Filter now: {summarise_filter_tree(updated.get('filter') or {})}"
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"add_filter_clause({group_id_or_name!r}, {field!r})", e)
+
+
+@mcp.tool()
+def qd_remove_filter_clause(
+    group_id_or_name: str,
+    field: str | None = None,
+    clause_key: str | None = None,
+) -> str:
+    """Remove one or more clauses from a saved filter group.
+
+    Pass ``field`` to remove every clause matching that field name (the
+    common case — e.g. "drop the premium threshold"). Pass ``clause_key``
+    to target a single clause by UUID when there are multiple matching
+    clauses on the same field. Pass both to require both match.
+
+    Args:
+        group_id_or_name: UUID or name of the filter group.
+        field: Field name to match (any case). Removes all matches.
+        clause_key: UUID of a specific leaf — find it via
+            ``qd_get_filter_group``.
+    """
+    if field is None and clause_key is None:
+        return "Pass at least one of `field` or `clause_key`."
+    try:
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        tree = g.get("filter") or {}
+        n = remove_leaves(tree, key=clause_key, field=field)
+        if n == 0:
+            target = field or clause_key
+            return f"No clauses matching {target!r} in {g.get('name', '?')!r}."
+        g["filter"] = tree
+        updated = _get_client().update_filter_group(g)
+        if updated is None:
+            return "Update failed (see server logs)."
+        return (
+            f"Removed {n} clause(s) from {g.get('name', '?')!r}.\n"
+            f"Filter now: {summarise_filter_tree(updated.get('filter') or {})}"
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"remove_filter_clause({group_id_or_name!r})", e)
+
+
+@mcp.tool()
+def qd_update_filter_clause(
+    group_id_or_name: str,
+    field: str,
+    new_op: str | None = None,
+    new_value: Any = None,
+    clause_key: str | None = None,
+) -> str:
+    """Edit a single clause in place — change its operator or value without
+    touching the rest of the filter.
+
+    Targets the clause by ``field`` (the common case). Pass ``clause_key``
+    when there are multiple clauses on the same field. Errors if the match
+    is ambiguous (multiple leaves match without a key).
+
+    Either or both of ``new_op`` and ``new_value`` must be provided.
+
+    Args:
+        group_id_or_name: UUID or name.
+        field: Field name of the clause to edit (any case).
+        new_op: Replacement operator. ``None`` keeps the existing operator.
+        new_value: Replacement value. ``None`` is treated as "no change"
+            here — pass ``new_op="!=", new_value=None`` if you literally
+            need a null value (rare on this API).
+        clause_key: UUID of a specific leaf if multiple clauses share the
+            same field.
+
+    Example::
+
+        # Tighten the premium floor on a saved group from $5K to $50K
+        qd_update_filter_clause(
+            "clean_signal", "PREMIUM_IN_CENTS", new_value=5_000_000,
+        )
+    """
+    if new_op is None and new_value is None:
+        return "Pass at least one of `new_op` or `new_value`."
+    try:
+        g = _resolve_filter_group(group_id_or_name)
+        if g is None:
+            return f"Filter group {group_id_or_name!r} not found."
+        tree = g.get("filter") or {}
+        matches = find_leaves(tree, key=clause_key, field=field)
+        if not matches:
+            return f"No clause matching field {field!r} in {g.get('name', '?')!r}."
+        if len(matches) > 1 and clause_key is None:
+            keys = [leaf.get("key", "?")[:8] for _, leaf in matches]
+            return (
+                f"Multiple clauses match field {field!r} in "
+                f"{g.get('name', '?')!r}. Pass clause_key=one of: {keys}"
+            )
+        _, leaf = matches[0]
+        # Only forward the kwargs the caller actually provided. ``None``
+        # means "keep the existing value" at the MCP-tool level — the
+        # underlying API doesn't have a concept of null filter values
+        # anyway, so this is the right behaviour.
+        update_kwargs: dict[str, Any] = {}
+        if new_op is not None:
+            update_kwargs["new_op"] = new_op
+        if new_value is not None:
+            update_kwargs["new_value"] = new_value
+        update_leaf(leaf, **update_kwargs)
+        g["filter"] = tree
+        updated = _get_client().update_filter_group(g)
+        if updated is None:
+            return "Update failed (see server logs)."
+        return (
+            f"Updated clause in {g.get('name', '?')!r}: "
+            f"{leaf['field']}{_OP_SYMBOL_FOR(leaf['operationType'])}{leaf['value']}\n"
+            f"Filter now: {summarise_filter_tree(updated.get('filter') or {})}"
+        )
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error(f"update_filter_clause({group_id_or_name!r}, {field!r})", e)
+
+
+# Re-export the operator-symbol map for the surgical-edit tools' output and
+# the sentinel for "value not provided" semantics in qd_update_filter_clause.
+def _OP_SYMBOL_FOR(op: str) -> str:
+    return {
+        "EQUALS": "=",
+        "DOES_NOT_EQUAL": "!=",
+        "GREATER_THAN": ">",
+        "GREATER_THAN_OR_EQUAL_TO": ">=",
+        "LESS_THAN": "<",
+        "LESS_THAN_OR_EQUAL_TO": "<=",
+        "CONTAINS": " contains ",
+    }.get(op, op)
 
 
 def _regenerate_keys(tree: dict[str, Any]) -> dict[str, Any]:
