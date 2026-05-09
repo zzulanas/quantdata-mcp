@@ -2324,6 +2324,535 @@ def qd_get_unconsolidated_flow(
 
 
 # ---------------------------------------------------------------------------
+# v0.4.0 — Tier-2 tools: heat map, interval map, news, gainers/losers,
+# dark pool, equity prints, stock OHLC. Broader market context that
+# complements the per-options-tool surface.
+# ---------------------------------------------------------------------------
+
+
+def _fmt_heat_map(
+    data: dict[str, Any] | None,
+    top_n: int = 15,
+    ticker: str | None = None,
+) -> str:
+    """Render the option heat map by surfacing the top-N cells by absolute
+    value across all expirations. The raw payload covers thousands of cells
+    (every expiration × every strike) — the LLM only needs the heaviest."""
+    if not data or "response" not in data:
+        return "No heat map data available."
+    resp = data["response"]
+    spot = resp.get("stockPriceInCents", 0) / 100
+    hm = resp.get("optionHeatMap") or {}
+    if not hm:
+        return f"Heat Map — {ticker or '?'} ${spot:,.2f}: empty payload."
+    cells = []
+    for exp, strikes in hm.items():
+        for sk_str, cell in (strikes or {}).items():
+            if not isinstance(cell, dict):
+                continue
+            call_v = float(cell.get("callValue") or 0)
+            put_v = float(cell.get("putValue") or 0)
+            net = call_v + put_v
+            if net == 0 and call_v == 0 and put_v == 0:
+                continue
+            cells.append((exp, int(sk_str) / 100, call_v, put_v, net))
+    cells.sort(key=lambda c: abs(c[4]), reverse=True)
+    cells = cells[:top_n]
+    if not cells:
+        return f"Heat Map — {ticker or '?'} ${spot:,.2f}: no non-zero cells."
+    label = f"Heat Map — {ticker or '?'} ${spot:,.2f}, top {len(cells)} cells"
+    lines = [label, ""]
+    lines.append(
+        f"  {'Exp':12s}  {'Strike':>10s}  {'Call':>14s}  {'Put':>14s}  {'Net':>14s}"
+    )
+    lines.append("  " + "-" * 70)
+    for exp, sk, c, p, net in cells:
+        lines.append(
+            f"  {exp:12s}  ${sk:>8,.0f}  "
+            f"{c:>14,.0f}  {p:>14,.0f}  {net:>+14,.0f}"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_interval_map(
+    data: dict[str, Any] | None,
+    top_n: int = 8,
+    ticker: str | None = None,
+) -> str:
+    """Render the interval map as the top time buckets (by total absolute
+    greek concentration), with each bucket's top strikes."""
+    if not data or "response" not in data:
+        return "No interval map data available."
+    resp = data["response"]
+    imap = resp.get("intervalMap") or {}
+    if not imap:
+        return "Interval map: empty payload."
+    # For each timestamp bucket, sum the |greek| across all strikes in the
+    # nested {exp: {strike: {CALL, PUT}}} structure
+    bucket_totals: list[tuple[int, dict[str, dict[str, dict[str, float]]]]] = []
+    for ts_str, exp_map in imap.items():
+        if not isinstance(exp_map, dict):
+            continue
+        total = 0.0
+        for _exp, strikes in exp_map.items():
+            for _sk, leg in (strikes or {}).items():
+                if not isinstance(leg, dict):
+                    continue
+                total += abs(float(leg.get("CALL") or 0)) + abs(float(leg.get("PUT") or 0))
+        bucket_totals.append((int(ts_str), exp_map, total))  # type: ignore[arg-type]
+    bucket_totals.sort(key=lambda b: b[2], reverse=True)
+    bucket_totals = bucket_totals[:top_n]
+    lines = [f"Interval Map — {ticker or '?'}, top {len(bucket_totals)} time buckets", ""]
+    et = ZoneInfo("America/New_York")
+    for ts_ms, exp_map, total in bucket_totals:
+        when = datetime.fromtimestamp(ts_ms / 1000, tz=et).strftime("%Y-%m-%d %H:%M ET")
+        lines.append(f"  {when}  total={total:,.0f}")
+        # Top 3 strikes within this bucket (across all expirations) by abs CALL+PUT
+        strike_sums: list[tuple[str, float, float, float]] = []
+        for exp, strikes in (exp_map or {}).items():
+            for sk_str, leg in (strikes or {}).items():
+                c = float((leg or {}).get("CALL") or 0)
+                p = float((leg or {}).get("PUT") or 0)
+                strike_sums.append((f"{exp} ${int(sk_str)/100:,.0f}", c, p, abs(c) + abs(p)))
+        strike_sums.sort(key=lambda s: s[3], reverse=True)
+        for label, c, p, _ in strike_sums[:3]:
+            lines.append(f"    {label:25s}  call={c:>+14,.0f}  put={p:>+14,.0f}")
+    return "\n".join(lines)
+
+
+def _fmt_news_articles(data: dict[str, Any] | None, top_n: int = 10) -> str:
+    """Render the news-article listing as a flat list of headlines with
+    ticker tags, topics, and links."""
+    if not data:
+        return "No news articles."
+    # Don't use ``or`` to fall through — an empty list is falsy but valid.
+    if "response" in data:
+        articles = data["response"]
+    elif "articles" in data:
+        articles = data["articles"]
+    else:
+        articles = data
+    if not isinstance(articles, list):
+        return f"Unexpected news payload shape: {type(articles).__name__}"
+    if not articles:
+        return "No news articles for the current filter."
+    et = ZoneInfo("America/New_York")
+    lines = [f"News Articles — {len(articles)} returned, top {min(top_n, len(articles))} shown", ""]
+    for art in articles[:top_n]:
+        title = art.get("title", "(untitled)")
+        link = art.get("link", "")
+        tickers = [t.get("ticker") for t in (art.get("tickerMetadata") or []) if isinstance(t, dict)]
+        tickers = [t for t in tickers if t]
+        topics = art.get("topics") or []
+        ts = art.get("publishedTime")
+        when = (
+            datetime.fromtimestamp(ts / 1000, tz=et).strftime("%Y-%m-%d %H:%M ET")
+            if isinstance(ts, (int, float)) else "?"
+        )
+        lines.append(f"  {when}  {title}")
+        if tickers:
+            lines.append(f"    tickers: {', '.join(tickers[:8])}")
+        if topics:
+            lines.append(f"    topics: {', '.join(topics[:8])}")
+        if link:
+            lines.append(f"    {link}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _fmt_gainers_losers(data: dict[str, Any] | None, top_n: int = 10) -> str:
+    """Render the per-ticker bullish/bearish premium summary as two ranked
+    columns (top bullish, top bearish)."""
+    if not data or "response" not in data:
+        return "No gainers/losers data."
+    resp = data["response"]
+    by_ticker: dict[str, dict[str, float]] = (
+        resp.get("gainersLosersTickerValueSumMap") or {}
+    )
+    if not by_ticker:
+        return "Gainers/losers: empty payload."
+    bullish = []
+    bearish = []
+    for tkr, vals in by_ticker.items():
+        bull = float(vals.get("bullishPremiumInCentsSum") or 0) / 100
+        bear = float(vals.get("bearishPremiumInCentsSum") or 0) / 100
+        bullish.append((tkr, bull, bear))
+        bearish.append((tkr, bear, bull))
+    bullish.sort(key=lambda r: r[1], reverse=True)
+    bearish.sort(key=lambda r: r[1], reverse=True)
+    lines = [f"Gainers / Losers — {len(by_ticker)} tickers, top {top_n} per side", ""]
+    lines.append("Top bullish (call-side dominant):")
+    for tkr, bull, bear in bullish[:top_n]:
+        lines.append(f"  {tkr:8s}  bullish=${bull:>14,.0f}  bearish=${bear:>14,.0f}")
+    lines.append("")
+    lines.append("Top bearish (put-side dominant):")
+    for tkr, bear, bull in bearish[:top_n]:
+        lines.append(f"  {tkr:8s}  bearish=${bear:>14,.0f}  bullish=${bull:>14,.0f}")
+    return "\n".join(lines)
+
+
+def _fmt_dark_pool_levels(data: dict[str, Any] | None, top_n: int = 15) -> str:
+    """Render dark-pool size at each price level, sorted by size DESC."""
+    if not data or "response" not in data:
+        return "No dark pool data."
+    resp = data["response"]
+    spot = resp.get("stockPriceInCents", 0) / 100
+    levels = resp.get("priceInCentsToDarkPoolLevelDataSumModelMap") or {}
+    if not levels:
+        return f"Dark Pool Levels — spot ${spot:,.2f}: no levels."
+    rows = []
+    for px_str, leg in levels.items():
+        px = int(px_str) / 100
+        if not isinstance(leg, dict):
+            continue
+        size = leg.get("sizeSum") or leg.get("size") or 0
+        notional = (
+            float(leg.get("notionalValueInCentsSum") or 0) / 100
+            if any("notional" in k.lower() for k in leg) else 0
+        )
+        rows.append((px, int(size or 0), notional, leg))
+    rows.sort(key=lambda r: r[1], reverse=True)
+    rows = rows[:top_n]
+    lines = [f"Dark Pool Levels — spot ${spot:,.2f}, top {len(rows)} by size", ""]
+    lines.append(f"  {'Price':>10s}  {'Size':>14s}  {'Notional ($)':>18s}")
+    lines.append("  " + "-" * 50)
+    for px, size, notional, _ in rows:
+        notional_s = f"${notional:>14,.0f}" if notional else ""
+        lines.append(f"  ${px:>8,.2f}  {size:>14,d}  {notional_s:>18s}")
+    return "\n".join(lines)
+
+
+def _fmt_equity_prints(data: dict[str, Any] | None, last_n: int = 15) -> str:
+    """Render recent equity prints (raw tape on the underlier)."""
+    if not data:
+        return "No equity prints."
+    # Same empty-list-is-falsy gotcha as _fmt_news_articles — explicit check.
+    if isinstance(data, dict):
+        if "response" in data:
+            prints_list = data["response"]
+        else:
+            prints_list = data
+    else:
+        prints_list = data
+    if not isinstance(prints_list, list):
+        return f"Unexpected equity-prints payload: {type(prints_list).__name__}"
+    if not prints_list:
+        return "No equity prints for the current filter."
+    et = ZoneInfo("America/New_York")
+    rows = prints_list[:last_n]
+    lines = [
+        f"Equity Prints — {len(prints_list)} total, last {len(rows)} shown",
+        "",
+        f"  {'Time (ET)':>14s}  {'Ticker':>8s}  {'Price':>9s}  {'Size':>10s}  {'Side':>6s}  {'Notional':>14s}",
+        "  " + "-" * 75,
+    ]
+    for p in rows:
+        ts = p.get("tradeTime") or 0
+        when = (
+            datetime.fromtimestamp(ts / 1000, tz=et).strftime("%H:%M:%S")
+            if isinstance(ts, (int, float)) and ts else "?"
+        )
+        ticker = p.get("ticker", "?")
+        price = (p.get("priceInCents") or 0) / 100
+        size = int(p.get("size") or 0)
+        side = p.get("tradeSideCode") or p.get("tradeSideCodeType") or ""
+        notional = (p.get("notionalValueInCents") or 0) / 100
+        lines.append(
+            f"  {when:>14s}  {ticker:>8s}  ${price:>7,.2f}  {size:>10,d}  {side:>6s}  ${notional:>12,.0f}"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_stock_price_time(data: dict[str, Any] | None, last_n: int = 15) -> str:
+    """Render the underlying-stock OHLC series as a candle table."""
+    if not data or "response" not in data:
+        return "No stock price/time data."
+    series = data["response"].get("stockPriceOverTime") or []
+    if not series:
+        return "Stock price/time: empty series."
+    et = ZoneInfo("America/New_York")
+    # Each row is typically [ts_ms, open, high, low, close, volume?]
+    rows = series[-last_n:]
+    lines = [
+        f"Stock Price / Time — {len(series)} bars, last {len(rows)} shown",
+        "",
+        f"  {'Time (ET)':>16s}  {'Open':>10s}  {'High':>10s}  {'Low':>10s}  {'Close':>10s}",
+        "  " + "-" * 65,
+    ]
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        ts_ms, o, h, low, close = row[0], row[1], row[2], row[3], row[4]
+        try:
+            when = datetime.fromtimestamp(ts_ms / 1000, tz=et).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            when = str(ts_ms)
+        # Stock prices arrive as cents (int) from QuantData
+        def _fmt_px(v: Any) -> str:
+            if isinstance(v, (int, float)):
+                return f"${(v / 100):>8,.2f}"
+            return str(v)
+        lines.append(
+            f"  {when:>16s}  {_fmt_px(o):>10s}  {_fmt_px(h):>10s}  {_fmt_px(low):>10s}  {_fmt_px(close):>10s}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def qd_get_heat_map(
+    ticker: str | None = None,
+    date: str | None = None,
+    expiration_date: str | None = None,
+    data_mode: DataMode = DataMode.PREMIUM,
+    top_n: int = 15,
+) -> str:
+    """Get the option heat map — top cells (strike × expiration) by value.
+
+    Surfaces where the heat actually is — the strikes/expirations carrying
+    the most premium / volume / trade count, ranked by absolute value.
+    Useful for "what's the dealer's biggest book right now" questions.
+
+    Args:
+        ticker: Ticker symbol (default: SPX).
+        date: Session date YYYY-MM-DD (default: today).
+        expiration_date: Page-filter expiration (default: same as date).
+        data_mode: PREMIUM (default), TRADE_COUNT, or VOLUME.
+        top_n: Number of top cells to render (default: 15).
+    """
+    try:
+        with tool_context(
+            "heat_map",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={"dataModeType": data_mode.value},
+        ) as ctx:
+            data = ctx.client.fetch_heat_map(ctx.tool_spec.tool_id)
+        return _fmt_heat_map(data, top_n=top_n, ticker=ctx.ticker)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("heat map", e)
+
+
+@mcp.tool()
+def qd_get_interval_map(
+    ticker: str | None = None,
+    date: str | None = None,
+    expiration_date: str | None = None,
+    greek_type: GreekMode = GreekMode.DELTA,
+    aggregation: AggregationPeriod = AggregationPeriod.FIVE_MINUTE,
+    padding_strikes: int = 5,
+    top_n: int = 8,
+) -> str:
+    """Get the interval map — intraday greek concentration per time bucket.
+
+    Args:
+        ticker: Ticker symbol (default: SPX).
+        date: Session date YYYY-MM-DD.
+        expiration_date: Filter to a specific expiration.
+        greek_type: GAMMA / DELTA / CHARM / VANNA.
+        aggregation: Time bucket size (default FIVE_MINUTE).
+        padding_strikes: Strikes around spot to render per bucket.
+        top_n: Number of time buckets to surface (sorted by total |greek|).
+    """
+    try:
+        with tool_context(
+            "interval_map",
+            ticker=ticker,
+            date=date,
+            expiration_date=expiration_date,
+            metadata_updates={
+                "aggregationPeriodType": aggregation.value,
+                "greekModeType": greek_type.value,
+                "numberOfPaddingStrikes": padding_strikes,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_interval_map(ctx.tool_spec.tool_id)
+        return _fmt_interval_map(data, top_n=top_n, ticker=ctx.ticker)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("interval map", e)
+
+
+@mcp.tool()
+def qd_get_news_articles(
+    tickers: list[str] | None = None,
+    sentiment: list[SentimentType] | None = None,
+    topics: list[str] | None = None,
+    title_contains: str | None = None,
+    body_contains: str | None = None,
+    last_n: int = 10,
+) -> str:
+    """Get the news-article listing for the current page filter.
+
+    Filters by ticker tag, server-classified sentiment, free-form topic
+    codes, and full-text CONTAINS searches on the title or body.
+
+    Args:
+        tickers: List of tickers to filter (e.g. ``["SPY", "QQQ", "NVDA"]``).
+            ``None`` returns articles for any ticker on the current page.
+        sentiment: Filter to BULLISH / BEARISH / NEUTRAL (combine).
+        topics: Free-form topic codes (server-defined).
+        title_contains: Substring search on the article title.
+        body_contains: Substring search on the article body.
+        last_n: Number of articles to render, sorted newest first.
+    """
+    try:
+        filter_updates: dict[str, dict[str, Any] | None] = {
+            "ticker": _eq(tickers) if tickers else None,
+            "sentiment": _eq([s.value for s in sentiment]) if sentiment else None,
+            "topic": _eq(topics) if topics else None,
+            "title": (
+                {"filterOperationType": "CONTAINS", "value": title_contains}
+                if title_contains else None
+            ),
+            "body": (
+                {"filterOperationType": "CONTAINS", "value": body_contains}
+                if body_contains else None
+            ),
+        }
+        with tool_context(
+            "news_articles",
+            filter_updates=filter_updates,
+        ) as ctx:
+            data = ctx.client.fetch_news_articles(ctx.tool_spec.tool_id)
+        return _fmt_news_articles(data, top_n=last_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("news articles", e)
+
+
+@mcp.tool()
+def qd_get_gainers_losers(
+    sectors: list[str] | None = None,
+    industries: list[str] | None = None,
+    top_n: int = 10,
+) -> str:
+    """Get the market-wide bullish / bearish premium leaders.
+
+    Server aggregates per-ticker bullish + bearish premium across the
+    options market and returns the top tickers each side. Useful for
+    "what's flowing today across the whole market" questions.
+
+    Args:
+        sectors: Filter to specific sectors (e.g. ``["TECHNOLOGY"]``).
+        industries: Filter to specific industries.
+        top_n: Number of tickers per side (bullish + bearish columns).
+    """
+    try:
+        filter_updates: dict[str, dict[str, Any] | None] = {
+            "sectorType": _eq(sectors) if sectors else None,
+            "industryType": _eq(industries) if industries else None,
+        }
+        with tool_context(
+            "gainers_losers",
+            filter_updates=filter_updates,
+        ) as ctx:
+            data = ctx.client.fetch_gainers_losers(ctx.tool_spec.tool_id)
+        return _fmt_gainers_losers(data, top_n=top_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("gainers/losers", e)
+
+
+@mcp.tool()
+def qd_get_dark_pool_levels(
+    ticker: str | None = None,
+    max_levels: int | None = None,
+    top_n: int = 15,
+) -> str:
+    """Get dark-pool size at each price level for the underlier.
+
+    Args:
+        ticker: Ticker symbol (default: page-active or SPX).
+        max_levels: Cap on price levels the server returns (server-side knob).
+        top_n: Local cap on how many levels to render in the output.
+    """
+    try:
+        metadata_updates = (
+            {"maximumLevelCount": max_levels} if max_levels is not None else None
+        )
+        with tool_context(
+            "dark_pool_levels",
+            ticker=ticker,
+            metadata_updates=metadata_updates,
+        ) as ctx:
+            data = ctx.client.fetch_dark_pool_levels(ctx.tool_spec.tool_id)
+        return _fmt_dark_pool_levels(data, top_n=top_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("dark pool levels", e)
+
+
+@mcp.tool()
+def qd_get_equity_prints(
+    ticker: str | None = None,
+    min_size: int | None = None,
+    min_notional: float | None = None,
+    trade_side: list[TradeSideCodeType] | None = None,
+    last_n: int = 15,
+) -> str:
+    """Get equity-side prints — every print on the underlier's tape.
+
+    Filters by trade size (contracts), notional value (dollars), and
+    trade side (AA / A / M / B / BB).
+    """
+    try:
+        filter_updates: dict[str, dict[str, Any] | None] = {
+            "size": _gte(min_size) if min_size is not None else None,
+            "notionalValueInCents": (
+                _gte(int(min_notional * 100)) if min_notional is not None else None
+            ),
+            "tradeSideCodeType": (
+                _eq([t.value for t in trade_side]) if trade_side else None
+            ),
+        }
+        with tool_context(
+            "equity_prints",
+            ticker=ticker,
+            filter_updates=filter_updates,
+        ) as ctx:
+            data = ctx.client.fetch_equity_prints(ctx.tool_spec.tool_id)
+        return _fmt_equity_prints(data, last_n=last_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("equity prints", e)
+
+
+@mcp.tool()
+def qd_get_stock_price_time(
+    ticker: str | None = None,
+    aggregation: AggregationPeriod = AggregationPeriod.ONE_MINUTE,
+    chart_type: ChartType = ChartType.CANDLESTICK,
+    last_n: int = 15,
+) -> str:
+    """Get the underlying-stock OHLC series. Useful for context alongside
+    options data — "what was the spot doing while X was happening?".
+    """
+    try:
+        with tool_context(
+            "stock_price_time",
+            ticker=ticker,
+            metadata_updates={
+                "aggregationPeriodType": aggregation.value,
+                "chartType": chart_type.value,
+            },
+        ) as ctx:
+            data = ctx.client.fetch_stock_price_time(ctx.tool_spec.tool_id)
+        return _fmt_stock_price_time(data, last_n=last_n)
+    except QuantDataAuthError:
+        return AUTH_ERROR_MESSAGE
+    except Exception as e:
+        return format_error("stock price/time", e)
+
+
+# ---------------------------------------------------------------------------
 # Filter groups — server-side persistent named filter sets
 # ---------------------------------------------------------------------------
 #
