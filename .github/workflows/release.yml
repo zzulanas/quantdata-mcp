@@ -1,0 +1,72 @@
+name: Release to PyPI
+
+# Triggered by pushing a version tag (vMAJOR.MINOR.PATCH).
+# Future release flow:
+#   1. bump version in pyproject.toml + quantdata_mcp/__init__.py
+#   2. update CHANGELOG.md
+#   3. commit + push main
+#   4. git tag v0.X.0 -m "..."
+#   5. git push origin v0.X.0
+# This workflow handles build + PyPI upload from there.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:  # manual trigger via the Actions tab as a fallback
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Verify tag matches package version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(uv run python -c "import quantdata_mcp; print(quantdata_mcp.__version__)")
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package version $pkg_version"
+            exit 1
+          fi
+          echo "Tag and package version both at $pkg_version"
+
+      - name: Run tests before publish
+        run: uv run pytest -q
+
+      - name: Build distribution
+        run: |
+          rm -rf dist/
+          uv build
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish
+
+      - name: Confirm on PyPI
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          # Give PyPI's CDN a moment to update.
+          sleep 10
+          latest=$(curl -fsSL https://pypi.org/pypi/quantdata-mcp/json | python3 -c 'import sys, json; print(json.load(sys.stdin)["info"]["version"])')
+          if [ "$latest" = "$tag_version" ]; then
+            echo "✓ v$tag_version is now the latest on PyPI"
+          else
+            echo "::warning::PyPI shows latest as $latest (expected $tag_version) — may still be propagating"
+          fi
