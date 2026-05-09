@@ -292,6 +292,42 @@ quantdata-mcp setup --auth-token "NEW_TOKEN" --instance-id "SAME_ID"
 
 **"No such file or directory" in Claude Desktop:** Use the full path to `quantdata-mcp` (see step 4 above).
 
+## Related Projects
+
+[fortress-mcp](https://github.com/citychip/fortress-mcp) is a companion MCP server for traders who use [Interactive Brokers](https://www.interactivebrokers.com) and manage options portfolios (PMCC, PCS, Jade Lizard strategies). It connects Claude Desktop to a live IBKR account via the [Fortress Dashboard](https://github.com/citychip/options-portfolio-strategy-dashboard-2026).
+
+The two servers are **complementary** — quantdata-mcp provides market-wide options structure data; fortress-mcp provides portfolio-level context:
+
+| | quantdata-mcp | fortress-mcp |
+|---|---|---|
+| **Data source** | QuantData API (market-wide) | Fortress Dashboard (live IBKR portfolio) |
+| **What Claude can do** | GEX walls, order flow, IV skew, max pain for any ticker | Check positions, P&L, stop-loss signals, roll candidates, pre-trade gates |
+| **Portfolio awareness** | None | Full |
+| **QuantData depth** | Full real-time API | Summary only (parsed daily report files) |
+
+Running both together lets Claude combine live market structure with portfolio context in a single prompt — for example: *"Check my MSFT PMCC stop-loss status and show me the current GEX walls."*
+
+```json
+{
+  "mcpServers": {
+    "quantdata": {
+      "command": "quantdata-mcp",
+      "args": ["serve"]
+    },
+    "fortress-dashboard": {
+      "command": "python3",
+      "args": ["/path/to/fortress-mcp/fortress_mcp.py"],
+      "env": {
+        "FORTRESS_API_URL": "http://YOUR_VPS_IP:8080",
+        "FORTRESS_API_TOKEN": "YOUR_64_CHAR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Contributing
 
 Contributions are welcome — bug reports, new tools wrapping additional QuantData widgets, formatter improvements, and docs all help. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev environment setup, the recipe for adding a new MCP tool, and the conventions to follow when sending a PR.
