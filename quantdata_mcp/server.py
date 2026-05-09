@@ -31,6 +31,7 @@ from quantdata_mcp._context import (
 )
 from quantdata_mcp.client import QuantDataAuthError, QuantDataClient
 from quantdata_mcp.config import Config, config_exists, load_config, save_config
+from quantdata_mcp.filters import build_order_flow_filter
 from quantdata_mcp.tools import (
     TOOL_DEFINITIONS,
     AggregationPeriod,
@@ -1615,47 +1616,39 @@ def qd_get_order_flow(
         trade_consolidation_type: Free-form consolidation type codes.
         last_n: Number of recent entries to show (default: 20).
     """
-    # Build filter_updates as a single dict — the tool_context manager drops
-    # entries whose value is None, so callers can express "no filter" as None
-    # without polluting the API payload.
-    filter_updates: dict[str, dict[str, Any] | None] = {
-        # Existing filters
-        "contractType": _eq(contract_type.value) if contract_type is not None else None,
-        "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
-        "tradeSideCodeType": _eq([t.value for t in trade_side]) if trade_side else None,
-        "premiumInCents": _gte(int(min_premium * 100)) if min_premium is not None else None,
-        "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
-        # Bool flags
-        "isUnusual": _eq(is_unusual) if is_unusual is not None else None,
-        "isGoldenSweep": _eq(is_golden_sweep) if is_golden_sweep is not None else None,
-        "isOpeningPosition": _eq(is_opening_position) if is_opening_position is not None else None,
-        "isETF": _eq(is_etf) if is_etf is not None else None,
-        "isIndex": _eq(is_index) if is_index is not None else None,
-        "isVolumeGreaterThanOpenInterest": _eq(is_volume_gt_oi) if is_volume_gt_oi is not None else None,
-        # Threshold filters
-        "size": _gte(min_size) if min_size is not None else None,
-        "volume": _gte(min_volume) if min_volume is not None else None,
-        "openInterest": _gte(min_open_interest) if min_open_interest is not None else None,
-        "impliedVolatility": _gte(min_iv) if min_iv is not None else None,
-        "bidAskSpreadInCents": _gte(int(min_bid_ask_spread * 100)) if min_bid_ask_spread is not None else None,
-        "moneynessDegreeInPercent": _gte(min_moneyness_pct) if min_moneyness_pct is not None else None,
-        "moneynessDegreeInCents": _gte(int(min_moneyness_dollars * 100)) if min_moneyness_dollars is not None else None,
-        "fractionalDaysToExpiration": _lte(max_dte) if max_dte is not None else None,
-        # Greek thresholds — one operator per field, so all are GTE.
-        "greekDelta": _gte(min_delta) if min_delta is not None else None,
-        "greekGamma": _gte(min_gamma) if min_gamma is not None else None,
-        "greekTheta": _gte(min_theta) if min_theta is not None else None,
-        "greekVega": _gte(min_vega) if min_vega is not None else None,
-        "greekCharm": _gte(min_charm) if min_charm is not None else None,
-        "greekVanna": _gte(min_vanna) if min_vanna is not None else None,
-        # Multi-select lists
-        "sentimentType": _eq([s.value for s in sentiment_type]) if sentiment_type else None,
-        "tradeType": _eq(trade_type) if trade_type else None,
-        "exchangeType": _eq(exchange_type) if exchange_type else None,
-        "sectorType": _eq(sector) if sector else None,
-        "industryType": _eq(industry) if industry else None,
-        "tradeConsolidationType": _eq(trade_consolidation_type) if trade_consolidation_type else None,
-    }
+    filter_updates = build_order_flow_filter(
+        contract_type=contract_type,
+        moneyness=moneyness,
+        trade_side=trade_side,
+        min_premium=min_premium,
+        strikes=strikes,
+        is_unusual=is_unusual,
+        is_golden_sweep=is_golden_sweep,
+        is_opening_position=is_opening_position,
+        is_etf=is_etf,
+        is_index=is_index,
+        is_volume_gt_oi=is_volume_gt_oi,
+        min_size=min_size,
+        min_volume=min_volume,
+        min_open_interest=min_open_interest,
+        min_iv=min_iv,
+        min_bid_ask_spread=min_bid_ask_spread,
+        min_moneyness_pct=min_moneyness_pct,
+        min_moneyness_dollars=min_moneyness_dollars,
+        max_dte=max_dte,
+        min_delta=min_delta,
+        min_gamma=min_gamma,
+        min_theta=min_theta,
+        min_vega=min_vega,
+        min_charm=min_charm,
+        min_vanna=min_vanna,
+        sentiment_type=sentiment_type,
+        trade_type=trade_type,
+        exchange_type=exchange_type,
+        sector=sector,
+        industry=industry,
+        trade_consolidation_type=trade_consolidation_type,
+    )
     try:
         with tool_context(
             "order_flow",
@@ -2239,42 +2232,40 @@ def qd_get_unconsolidated_flow(
         industry: Free-form industry codes.
         last_n: Number of trades to render (default: 20).
     """
-    filter_updates: dict[str, dict[str, Any] | None] = {
-        # Existing filters
-        "contractType": _eq(contract_type.value) if contract_type is not None else None,
-        "moneynessMoneyType": _eq([m.value for m in moneyness]) if moneyness else None,
-        "tradeSideCodeType": _eq([t.value for t in trade_side]) if trade_side else None,
-        "premiumInCents": _gte(int(min_premium * 100)) if min_premium is not None else None,
-        "strikePriceInCents": _eq([int(s * 100) for s in strikes]) if strikes else None,
-        # Bool flags (no isGoldenSweep on the unconsolidated scaffold)
-        "isUnusual": _eq(is_unusual) if is_unusual is not None else None,
-        "isOpeningPosition": _eq(is_opening_position) if is_opening_position is not None else None,
-        "isETF": _eq(is_etf) if is_etf is not None else None,
-        "isIndex": _eq(is_index) if is_index is not None else None,
-        "isVolumeGreaterThanOpenInterest": _eq(is_volume_gt_oi) if is_volume_gt_oi is not None else None,
-        # Threshold filters
-        "size": _gte(min_size) if min_size is not None else None,
-        "volume": _gte(min_volume) if min_volume is not None else None,
-        "openInterest": _gte(min_open_interest) if min_open_interest is not None else None,
-        "impliedVolatility": _gte(min_iv) if min_iv is not None else None,
-        "bidAskSpreadInCents": _gte(int(min_bid_ask_spread * 100)) if min_bid_ask_spread is not None else None,
-        "moneynessDegreeInPercent": _gte(min_moneyness_pct) if min_moneyness_pct is not None else None,
-        "moneynessDegreeInCents": _gte(int(min_moneyness_dollars * 100)) if min_moneyness_dollars is not None else None,
-        "fractionalDaysToExpiration": _lte(max_dte) if max_dte is not None else None,
-        # Greek thresholds — one operator per field, all GTE.
-        "greekDelta": _gte(min_delta) if min_delta is not None else None,
-        "greekGamma": _gte(min_gamma) if min_gamma is not None else None,
-        "greekTheta": _gte(min_theta) if min_theta is not None else None,
-        "greekVega": _gte(min_vega) if min_vega is not None else None,
-        "greekCharm": _gte(min_charm) if min_charm is not None else None,
-        "greekVanna": _gte(min_vanna) if min_vanna is not None else None,
-        # Multi-select lists (no tradeConsolidationType on this scaffold)
-        "sentimentType": _eq([s.value for s in sentiment_type]) if sentiment_type else None,
-        "tradeType": _eq(trade_type) if trade_type else None,
-        "exchangeType": _eq(exchange_type) if exchange_type else None,
-        "sectorType": _eq(sector) if sector else None,
-        "industryType": _eq(industry) if industry else None,
-    }
+    # Reuses the consolidated-flow builder. The unconsolidated scaffold lacks
+    # `isGoldenSweep` and `tradeConsolidationType` — we just don't surface them
+    # as MCP args, so they default to None and `tool_context` drops them.
+    filter_updates = build_order_flow_filter(
+        contract_type=contract_type,
+        moneyness=moneyness,
+        trade_side=trade_side,
+        min_premium=min_premium,
+        strikes=strikes,
+        is_unusual=is_unusual,
+        is_opening_position=is_opening_position,
+        is_etf=is_etf,
+        is_index=is_index,
+        is_volume_gt_oi=is_volume_gt_oi,
+        min_size=min_size,
+        min_volume=min_volume,
+        min_open_interest=min_open_interest,
+        min_iv=min_iv,
+        min_bid_ask_spread=min_bid_ask_spread,
+        min_moneyness_pct=min_moneyness_pct,
+        min_moneyness_dollars=min_moneyness_dollars,
+        max_dte=max_dte,
+        min_delta=min_delta,
+        min_gamma=min_gamma,
+        min_theta=min_theta,
+        min_vega=min_vega,
+        min_charm=min_charm,
+        min_vanna=min_vanna,
+        sentiment_type=sentiment_type,
+        trade_type=trade_type,
+        exchange_type=exchange_type,
+        sector=sector,
+        industry=industry,
+    )
     try:
         with tool_context(
             "unconsolidated_flow",
