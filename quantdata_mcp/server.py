@@ -2330,6 +2330,22 @@ def qd_get_unconsolidated_flow(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_active_ticker(arg: str | None) -> str:
+    """Resolve the ticker for tools whose own ``metadata.filter.ticker`` must
+    be synced to the active page.
+
+    Several Tier-2 tools (heat_map, interval_map, dark_pool_levels,
+    equity_prints, stock_price_time) have a ``ticker`` in their
+    ``metadata.filter`` scaffold that the QuantData backend AND's with the
+    page filter when computing data. If they disagree, the result is empty.
+    Auto-registered tools default to ``ticker="SPY"`` regardless of the
+    page filter, so the wrappers must explicitly sync.
+    """
+    from quantdata_mcp._context import _active_page
+
+    return arg or _active_page.get("ticker") or "SPX"
+
+
 def _fmt_heat_map(
     data: dict[str, Any] | None,
     top_n: int = 15,
@@ -2619,6 +2635,7 @@ def qd_get_heat_map(
         data_mode: PREMIUM (default), TRADE_COUNT, or VOLUME.
         top_n: Number of top cells to render (default: 15).
     """
+    resolved_ticker = _resolve_active_ticker(ticker)
     try:
         with tool_context(
             "heat_map",
@@ -2626,6 +2643,9 @@ def qd_get_heat_map(
             date=date,
             expiration_date=expiration_date,
             metadata_updates={"dataModeType": data_mode.value},
+            # Sync the tool's own filter.ticker — it's AND'd with the page
+            # filter and defaults to SPY on a fresh auto-registered tool.
+            filter_updates={"ticker": _eq(resolved_ticker)},
         ) as ctx:
             data = ctx.client.fetch_heat_map(ctx.tool_spec.tool_id)
         return _fmt_heat_map(data, top_n=top_n, ticker=ctx.ticker)
@@ -2656,6 +2676,7 @@ def qd_get_interval_map(
         padding_strikes: Strikes around spot to render per bucket.
         top_n: Number of time buckets to surface (sorted by total |greek|).
     """
+    resolved_ticker = _resolve_active_ticker(ticker)
     try:
         with tool_context(
             "interval_map",
@@ -2667,6 +2688,7 @@ def qd_get_interval_map(
                 "greekModeType": greek_type.value,
                 "numberOfPaddingStrikes": padding_strikes,
             },
+            filter_updates={"ticker": _eq(resolved_ticker)},
         ) as ctx:
             data = ctx.client.fetch_interval_map(ctx.tool_spec.tool_id)
         return _fmt_interval_map(data, top_n=top_n, ticker=ctx.ticker)
@@ -2772,6 +2794,7 @@ def qd_get_dark_pool_levels(
         max_levels: Cap on price levels the server returns (server-side knob).
         top_n: Local cap on how many levels to render in the output.
     """
+    resolved_ticker = _resolve_active_ticker(ticker)
     try:
         metadata_updates = (
             {"maximumLevelCount": max_levels} if max_levels is not None else None
@@ -2780,6 +2803,7 @@ def qd_get_dark_pool_levels(
             "dark_pool_levels",
             ticker=ticker,
             metadata_updates=metadata_updates,
+            filter_updates={"ticker": _eq(resolved_ticker)},
         ) as ctx:
             data = ctx.client.fetch_dark_pool_levels(ctx.tool_spec.tool_id)
         return _fmt_dark_pool_levels(data, top_n=top_n)
@@ -2802,8 +2826,10 @@ def qd_get_equity_prints(
     Filters by trade size (contracts), notional value (dollars), and
     trade side (AA / A / M / B / BB).
     """
+    resolved_ticker = _resolve_active_ticker(ticker)
     try:
         filter_updates: dict[str, dict[str, Any] | None] = {
+            "ticker": _eq(resolved_ticker),
             "size": _gte(min_size) if min_size is not None else None,
             "notionalValueInCents": (
                 _gte(int(min_notional * 100)) if min_notional is not None else None
@@ -2835,6 +2861,7 @@ def qd_get_stock_price_time(
     """Get the underlying-stock OHLC series. Useful for context alongside
     options data — "what was the spot doing while X was happening?".
     """
+    resolved_ticker = _resolve_active_ticker(ticker)
     try:
         with tool_context(
             "stock_price_time",
@@ -2843,6 +2870,7 @@ def qd_get_stock_price_time(
                 "aggregationPeriodType": aggregation.value,
                 "chartType": chart_type.value,
             },
+            filter_updates={"ticker": _eq(resolved_ticker)},
         ) as ctx:
             data = ctx.client.fetch_stock_price_time(ctx.tool_spec.tool_id)
         return _fmt_stock_price_time(data, last_n=last_n)
